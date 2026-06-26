@@ -1,7 +1,8 @@
-import { sources, selectedSourceId, selectSource } from "../../stores/projectStore";
+import { sources } from "../../stores/projectStore";
+import { pickAndImport } from "../../lib/actions";
+import { busy } from "../../stores/uiStore";
+import { SourceItem } from "./SourceItem";
 
-/** Library of imported GIF sources. Selecting a source enters crop-edit mode
- *  (handled by the PreviewPanel). Import wiring lands in Jalon 1. */
 export function LibraryPanel() {
   return (
     <div class="flex h-full flex-col">
@@ -9,9 +10,9 @@ export function LibraryPanel() {
         <h2 class="font-medium text-neutral-300">Bibliothèque</h2>
         <button
           type="button"
-          disabled
-          class="rounded bg-accent px-2 py-1 text-xs font-medium text-white opacity-50"
-          title="À venir (Jalon 1)"
+          disabled={busy.value !== null}
+          onClick={pickAndImport}
+          class="rounded bg-accent px-2 py-1 text-xs font-medium text-white hover:brightness-110 disabled:opacity-50"
         >
           + Importer
         </button>
@@ -25,20 +26,7 @@ export function LibraryPanel() {
         ) : (
           <ul class="space-y-1">
             {sources.value.map((s) => (
-              <li key={s.id}>
-                <button
-                  type="button"
-                  onClick={() => selectSource(s.id)}
-                  class={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left ${
-                    selectedSourceId.value === s.id
-                      ? "bg-accent-soft text-white"
-                      : "hover:bg-panel-2 text-neutral-300"
-                  }`}
-                >
-                  <span class="h-8 w-8 shrink-0 rounded bg-neutral-700" />
-                  <span class="truncate text-xs">{s.filename}</span>
-                </button>
-              </li>
+              <SourceItem key={s.id} source={s} />
             ))}
           </ul>
         )}

@@ -1,0 +1,42 @@
+stages:
+  - test
+  - build
+
+variables:
+  CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+
+cache:
+  key: "${CI_COMMIT_REF_SLUG}"
+  paths:
+    - .cargo/
+    - src-tauri/target/
+    - node_modules/
+
+test:
+  stage: test
+  image: node:22-bookworm
+  before_script:
+    - apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+    - curl https://sh.rustup.rs -sSf | sh -s -- -y
+    - source "$HOME/.cargo/env"
+    - npm ci
+  script:
+    - npm run build
+    - cd src-tauri && cargo test
+    - cd src-tauri && cargo test perf_synthetic_import_100_frames -- --nocapture
+
+build:linux:
+  stage: build
+  image: node:22-bookworm
+  before_script:
+    - apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+    - curl https://sh.rustup.rs -sSf | sh -s -- -y
+    - source "$HOME/.cargo/env"
+    - npm ci
+  script:
+    - npm run tauri build
+  artifacts:
+    paths:
+      - src-tauri/target/release/bundle/
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
