@@ -41,12 +41,12 @@ export function TimelineToolbar({ viewportWidth }: { viewportWidth: number }) {
 
       <span class="text-xs text-neutral-500">
         {model.frameCount} frame{model.frameCount !== 1 ? "s" : ""}
-        {sel > 0 ? ` · ${sel} sélectionnée${sel > 1 ? "s" : ""}` : ""}
+        {sel > 0 ? ` · ${sel} selected` : ""}
       </span>
 
       <span class="mx-1 h-4 w-px bg-edge" />
 
-      <div class="flex items-center gap-1" title="Zoom (Ctrl + molette)">
+      <div class="flex items-center gap-1" title="Zoom (Ctrl + wheel)">
         <button type="button" onClick={zoomOut} class={btn}>
           −
         </button>
@@ -61,7 +61,7 @@ export function TimelineToolbar({ viewportWidth }: { viewportWidth: number }) {
         <button type="button" onClick={zoomIn} class={btn}>
           +
         </button>
-        <button type="button" onClick={fit} disabled={empty} class={btn} title="Afficher toute la timeline">
+        <button type="button" onClick={fit} disabled={empty} class={btn} title="Fit the whole timeline">
           Ajuster
         </button>
         <button type="button" onClick={resetZoom} class={btn}>
@@ -74,14 +74,14 @@ export function TimelineToolbar({ viewportWidth }: { viewportWidth: number }) {
 
       <span class="mx-1 h-4 w-px bg-edge" />
 
-      <button type="button" onClick={addTrack} class={btn} title="Ajouter une piste">
-        + Piste ({tracks})
+      <button type="button" onClick={addTrack} class={btn} title="Add a track">
+        + Track ({tracks})
       </button>
-      <button type="button" onClick={splitAtPlayhead} disabled={empty} class={btn} title="Scinder au playhead (S)">
-        Scinder
+      <button type="button" onClick={splitAtPlayhead} disabled={empty} class={btn} title="Split at the playhead (S)">
+        Split
       </button>
       <button type="button" onClick={selectAllFrames} disabled={empty} class={btn}>
-        Tout sélectionner
+        Select all
       </button>
 
       {sel > 0 && (
@@ -90,12 +90,12 @@ export function TimelineToolbar({ viewportWidth }: { viewportWidth: number }) {
           onClick={deleteSelectedFrames}
           class="rounded bg-red-900/60 px-2 py-0.5 text-xs text-red-200 hover:bg-red-900"
         >
-          Supprimer ({sel})
+          Delete ({sel})
         </button>
       )}
 
       <span class="ml-auto hidden text-[10px] text-neutral-600 xl:inline">
-        Glisser l'en-tête : déplacer le clip · Glisser des frames : les insérer · S : scinder · Lasso · Ctrl+molette : zoom
+        Drag the header: move the clip · Drag frames: insert them · S: split · Marquee · Ctrl+wheel: zoom
       </span>
     </div>
   );

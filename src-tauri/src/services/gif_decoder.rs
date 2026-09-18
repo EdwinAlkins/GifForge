@@ -36,7 +36,7 @@ where
     let mut count = 0usize;
 
     for frame in decoder.into_frames() {
-        let frame = frame.map_err(|e| crate::error::GifForgeError::other(format!("frame GIF : {e}")))?;
+        let frame = frame.map_err(|e| crate::error::GifForgeError::other(format!("GIF frame: {e}")))?;
         let (numer, denom) = frame.delay().numer_denom_ms();
         on_frame(DecodedFrame {
             image: frame.into_buffer(),

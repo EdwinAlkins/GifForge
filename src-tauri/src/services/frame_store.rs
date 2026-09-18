@@ -68,7 +68,7 @@ pub fn file_to_data_url(path: &str) -> Result<String> {
         Ok(format!("data:image/png;base64,{}", BASE64.encode(bytes)))
     } else {
         Err(GifForgeError::other(format!(
-            "le fichier de frame n'est pas un PNG : {path}"
+            "frame file is not a PNG: {path}"
         )))
     }
 }

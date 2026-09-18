@@ -4,19 +4,19 @@ use serde::{Serialize, Serializer};
 /// readable message from a rejected `invoke`.
 #[derive(Debug, thiserror::Error)]
 pub enum GifForgeError {
-    #[error("erreur d'entrée/sortie : {0}")]
+    #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("erreur image : {0}")]
+    #[error("image error: {0}")]
     Image(#[from] image::ImageError),
 
-    #[error("erreur zip : {0}")]
+    #[error("ZIP error: {0}")]
     Zip(#[from] zip::result::ZipError),
 
-    #[error("erreur json : {0}")]
+    #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("erreur imagequant : {0}")]
+    #[error("imagequant error: {0}")]
     Quant(#[from] imagequant::Error),
 
     #[error("{0}")]

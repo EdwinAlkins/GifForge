@@ -281,7 +281,7 @@ export function TimelinePanel() {
 
           {model.frameCount === 0 && (
             <p class="absolute p-4 text-xs text-neutral-500" style={{ left: `${TRACK_LABEL_WIDTH}px`, top: `${RULER_HEIGHT}px` }}>
-              Importez un GIF — il devient un clip sur V1. Les pistes supérieures se superposent.
+              Import a GIF — it becomes a clip on V1. Higher tracks are composited on top.
             </p>
           )}
 

@@ -83,10 +83,10 @@ function CropMode({ source }: { source: SourceAsset }) {
           crop={source.crop}
         />
       ) : (
-        <p class="text-sm text-neutral-500">Chargement de l'aperçu…</p>
+        <p class="text-sm text-neutral-500">Loading preview…</p>
       )}
       <span class="absolute left-4 top-4 rounded bg-accent-soft px-2 py-1 text-xs text-white">
-        Recadrage : {source.filename}
+        Crop: {source.filename}
       </span>
     </>
   );
@@ -111,7 +111,7 @@ function Composite() {
   return (
     <div ref={boxRef} class="flex h-full w-full items-center justify-center">
       {clips.value.length === 0 ? (
-        <p class="text-sm text-neutral-500">Importez un GIF pour commencer.</p>
+        <p class="text-sm text-neutral-500">Import a GIF to get started.</p>
       ) : (
         <div
           class="relative overflow-hidden"

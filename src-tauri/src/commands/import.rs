@@ -18,5 +18,5 @@ pub async fn import_gif(app: AppHandle, path: String) -> Result<crate::models::I
         )
     })
     .await
-    .map_err(|e| GifForgeError::other(format!("tâche d'import interrompue : {e}")))?
+    .map_err(|e| GifForgeError::other(format!("import task interrupted: {e}")))?
 }

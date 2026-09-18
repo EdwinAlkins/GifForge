@@ -19,7 +19,7 @@ pub async fn save_project(app: AppHandle, payload: SaveProjectPayload) -> Result
     let SaveProjectPayload { path, project } = payload;
     tauri::async_runtime::spawn_blocking(move || project_io::save_project(&app, &path, &project))
         .await
-        .map_err(|e| GifForgeError::other(format!("tâche de sauvegarde interrompue : {e}")))?
+        .map_err(|e| GifForgeError::other(format!("save task interrupted: {e}")))?
 }
 
 /// Load a `.gifforge` ZIP, extract it, and rebuild the frame cache from source GIFs.
@@ -29,7 +29,7 @@ pub async fn open_project(app: AppHandle, path: String) -> Result<Project> {
         let projects_root = app
             .path()
             .app_data_dir()
-            .map_err(|e| GifForgeError::other(format!("app_data_dir indisponible : {e}")))?
+            .map_err(|e| GifForgeError::other(format!("app_data_dir unavailable: {e}")))?
             .join("projects");
         std::fs::create_dir_all(&projects_root)?;
 
@@ -49,5 +49,5 @@ pub async fn open_project(app: AppHandle, path: String) -> Result<Project> {
         project_io::hydrate_project(&app, &extract_dir, saved)
     })
     .await
-    .map_err(|e| GifForgeError::other(format!("tâche d'ouverture interrompue : {e}")))?
+    .map_err(|e| GifForgeError::other(format!("open task interrupted: {e}")))?
 }

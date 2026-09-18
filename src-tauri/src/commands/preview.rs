@@ -14,7 +14,7 @@ pub fn get_cropped_frame_path(
     let cache = app
         .path()
         .app_cache_dir()
-        .map_err(|e| crate::error::GifForgeError::other(format!("cache indisponible : {e}")))?;
+        .map_err(|e| crate::error::GifForgeError::other(format!("cache unavailable: {e}")))?;
     frame_store::ensure_cropped_frame_path(&cache, &frame_path, &crop)
 }
 

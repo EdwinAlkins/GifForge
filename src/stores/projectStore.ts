@@ -34,7 +34,7 @@ export const timelineModel = computed(() => buildTimelineModel(clips.value));
 /** Timeline cut into segments of constant visible frames: preview, playback and export. */
 export const renderPlan = computed(() => buildRenderPlan(timelineModel.value));
 
-export function createEmptyProject(name = "Sans titre"): Project {
+export function createEmptyProject(name = "Untitled"): Project {
   const now = new Date().toISOString();
   return {
     version: PROJECT_VERSION,

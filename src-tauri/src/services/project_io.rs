@@ -53,7 +53,7 @@ fn save_project_inner(app: Option<&AppHandle>, zip_path: &str, project: &Project
         for src in &project.sources {
             if !Path::new(&src.path).exists() {
                 return Err(GifForgeError::other(format!(
-                    "GIF source introuvable : {}",
+                    "Source GIF not found: {}",
                     src.path
                 )));
             }
@@ -149,7 +149,7 @@ pub fn hydrate_project(app: &AppHandle, extract_root: &Path, saved: SavedProject
     let cache = app
         .path()
         .app_cache_dir()
-        .map_err(|e| GifForgeError::other(format!("cache indisponible : {e}")))?;
+        .map_err(|e| GifForgeError::other(format!("cache unavailable: {e}")))?;
     hydrate_project_with_cache(extract_root, saved, &cache, Some(app))
 }
 
@@ -190,7 +190,7 @@ pub fn hydrate_project_with_cache(
 
         if !Path::new(&gif_path).exists() {
             return Err(GifForgeError::other(format!(
-                "GIF source manquant dans l'archive : {}",
+                "Source GIF missing from archive: {}",
                 disk_src.filename
             )));
         }
@@ -220,13 +220,13 @@ pub fn hydrate_project_with_cache(
     for saved_tf in &saved.timeline {
         let bank = banks.get(&saved_tf.source_id).ok_or_else(|| {
             GifForgeError::other(format!(
-                "source inconnue dans la timeline : {}",
+                "Unknown source in timeline: {}",
                 saved_tf.source_id
             ))
         })?;
         let template = bank.get(saved_tf.source_frame_index as usize).ok_or_else(|| {
             GifForgeError::other(format!(
-                "frame {} absente de la source {}",
+                "Frame {} missing from source {}",
                 saved_tf.source_frame_index, saved_tf.source_id
             ))
         })?;

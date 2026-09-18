@@ -51,7 +51,7 @@ export function exportGif(
     if (missing) {
       return Promise.reject(
         new Error(
-          `Cache frame introuvable (source ${missing.sourceId}, index ${missing.sourceFrameIndex ?? 0}). Réimportez le GIF ou rouvrez le projet.`,
+          `Frame cache not found (source ${missing.sourceId}, index ${missing.sourceFrameIndex ?? 0}). Re-import the GIF or reopen the project.`,
         ),
       );
     }

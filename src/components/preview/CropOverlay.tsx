@@ -115,7 +115,7 @@ export function CropOverlay({
       <img
         ref={imgRef}
         src={imageUrl}
-        alt="Recadrage"
+        alt="Crop"
         class="max-h-full max-w-full object-contain"
         draggable={false}
       />

@@ -27,7 +27,7 @@ export function FrameDurationEditor() {
   return (
     <div class="flex items-center gap-2 border-t border-edge px-3 py-2 text-xs">
       <span class="text-neutral-400">
-        Durée ({ids.size} frame{ids.size > 1 ? "s" : ""}) :
+        Duration ({ids.size} frame{ids.size > 1 ? "s" : ""}):
       </span>
       <input
         type="number"
@@ -43,7 +43,7 @@ export function FrameDurationEditor() {
         onClick={apply}
         class="rounded bg-accent px-2 py-0.5 font-medium text-white hover:brightness-110"
       >
-        Appliquer
+        Apply
       </button>
     </div>
   );

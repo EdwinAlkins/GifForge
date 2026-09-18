@@ -1,43 +1,43 @@
 # GifForge
 
-Éditeur de GIFs frame par frame pour Linux — interface type montage vidéo (NLE), construit avec **Tauri 2**, **Preact** et **Rust**.
+Frame-by-frame GIF editor for Linux — a non-linear video editor (NLE)-style interface built with **Tauri 2**, **Preact**, and **Rust**.
 
-## Fonctionnalités
+## Features
 
-- Import de un ou plusieurs GIFs dans la bibliothèque
-- Timeline horizontale avec vignettes, lecture et playhead
-- Suppression multi-frames (Shift+clic, touche Suppr)
-- Édition de la durée par frame (1–255 centisecondes)
-- Réordonnancement par glisser-déposer
-- Recadrage **par GIF source** (bouton « Recadrer » dans la bibliothèque)
-- Fusion multi-GIF (« + Timeline » sur une source)
-- Export GIF avec qualité réglable (rapide / équilibré / léger)
-- Sauvegarde de projet au format `.gifforge` (ZIP)
+- Import one or more GIFs into the library
+- Horizontal timeline with thumbnails, playback, and playhead
+- Multi-frame deletion (Shift-click, Delete key)
+- Per-frame duration editing (1–255 centiseconds)
+- Drag-and-drop reordering
+- **Per-source GIF** cropping (the “Crop” button in the library)
+- Multi-GIF composition (“+ Timeline” on a source)
+- GIF export with adjustable quality (fast / balanced / light)
+- Project saving in `.gifforge` (ZIP) format
 
 ## Timeline (NLE)
 
-- **Zoom** : slider, boutons +/−, 100%, ou Ctrl+molette sur la timeline
-- **Multi-pistes** : bouton « + Piste » — glissez une sélection vers V1, V2, …
-- **Sélection lasso** : clic-drag sur le fond pour dessiner une zone de sélection
-- **Multi-sélection** : Shift+clic, lasso, « Tout sélectionner », Ctrl+A
-- **Déplacement groupé** : glissez une frame sélectionnée (toute la sélection suit)
-- **Suppression groupée** : Suppr ou bouton « Supprimer (N) »
-- **Export** : ordre piste 0 → 1 → … (frames de chaque piste de gauche à droite)
+- **Zoom**: slider, +/− buttons, 100%, or Ctrl+wheel over the timeline
+- **Multiple tracks**: “+ Track” button — drag a selection to V1, V2, …
+- **Marquee selection**: click-drag on the background to draw a selection area
+- **Multi-selection**: Shift-click, marquee, “Select all”, Ctrl+A
+- **Group movement**: drag a selected frame (the whole selection follows)
+- **Group deletion**: Delete or the “Delete (N)” button
+- **Export**: track 0 → 1 → … order (each track’s frames from left to right)
 
-## Raccourcis clavier
+## Keyboard shortcuts
 
-| Touche | Action |
+| Key | Action |
 |--------|--------|
-| Espace | Lecture / pause |
-| ← / → | Frame précédente / suivante |
-| Suppr | Supprimer les frames sélectionnées |
-| Ctrl+Z | Annuler |
-| Ctrl+Y | Rétablir |
-| Ctrl+A | Tout sélectionner (timeline) |
+| Space | Play / pause |
+| ← / → | Previous / next frame |
+| Delete | Delete selected frames |
+| Ctrl+Z | Undo |
+| Ctrl+Y | Redo |
+| Ctrl+A | Select all (timeline) |
 
-## Développement
+## Development
 
-Prérequis : Node.js 20+, Rust stable, WebKitGTK (Linux).
+Requirements: Node.js 20+, stable Rust, WebKitGTK (Linux).
 
 ```bash
 npm install
@@ -51,34 +51,34 @@ cd src-tauri && cargo test
 npm run build
 ```
 
-Benchmark local (synthétique) :
+Local synthetic benchmark:
 
 ```bash
 chmod +x scripts/bench-import.sh
 ./scripts/bench-import.sh synthetic 100
 ```
 
-## Sauvegarde (`.gifforge`)
+## Saving (`.gifforge`)
 
-Le fichier de projet contient uniquement **`project.json`** (métadonnées timeline, crops, durées) et les **GIFs sources** originaux — pas de PNG de frames. À l'ouverture, le cache est reconstruit automatiquement par re-décodage des sources.
+The project file contains only **`project.json`** (timeline metadata, crops, and durations) and the original **source GIFs** — no frame PNGs. When opened, the cache is rebuilt automatically by decoding the sources again.
 
 ## Performance
 
-GifForge vise des GIFs volumineux (1000+ frames, 1080p). Optimisations clés :
+GifForge targets large GIFs (1000+ frames, 1080p). Key optimizations:
 
-| Zone | Approche |
+| Area | Approach |
 |------|----------|
-| IPC | Chemins disque via `convertFileSrc`, pas de base64 |
-| Decode Rust | Streaming frame-par-frame, batches parallèles PNG |
-| Timeline | Virtualisation horizontale, playhead overlay unique |
-| Preview | Prefetch ±8 frames, cache LRU asset |
-| Undo | Snapshots immuables sans `structuredClone` ni thumbs inline |
+| IPC | Disk paths through `convertFileSrc`, no base64 |
+| Decode Rust | Frame-by-frame streaming, parallel PNG batches |
+| Timeline | Horizontal virtualization, single playhead overlay |
+| Preview | Prefetch ±8 frames, asset LRU cache |
+| Undo | Immutable snapshots without `structuredClone` or inline thumbnails |
 
-**Limites recommandées** : 8 Go RAM, SSD, 1000 frames @ 1080p confortables ; au-delà de 2000 frames, l'import peut être long.
+**Recommended limits**: 8 GB RAM, SSD, 1000 frames at 1080p comfortably; imports may take longer beyond 2000 frames.
 
-**Baseline CI** : `perf_synthetic_import_100_frames` (100 frames 64×64, < 30 s).
+**CI baseline**: `perf_synthetic_import_100_frames` (100 frames at 64×64, < 30 s).
 
-Métriques dev : `window.__gifforgePerf` en mode développement.
+Dev metrics: `window.__gifforgePerf` in development mode.
 
 ## Build Linux (deb / AppImage)
 
@@ -86,4 +86,15 @@ Métriques dev : `window.__gifforgePerf` en mode développement.
 npm run tauri build
 ```
 
-Les artefacts se trouvent dans `src-tauri/target/release/bundle/`.
+Artifacts are located in `src-tauri/target/release/bundle/`.
+
+## Releases
+
+To publish a downloadable version, update the version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`, commit the changes, and push a matching tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+GitHub Actions then builds the Linux `.deb` and `.AppImage` bundles and attaches them to a new GitHub Release.

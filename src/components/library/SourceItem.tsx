@@ -37,7 +37,7 @@ export function SourceItem({ source }: Props) {
         )}
         <span class="min-w-0 flex-1 truncate text-xs">{source.filename}</span>
         {hasCrop && (
-          <span class="shrink-0 text-[10px] text-accent" title="Recadrage actif">
+          <span class="shrink-0 text-[10px] text-accent" title="Active crop">
             crop
           </span>
         )}
@@ -50,13 +50,13 @@ export function SourceItem({ source }: Props) {
             selected ? "bg-accent text-white" : "bg-panel-2 text-neutral-400 hover:text-neutral-200"
           }`}
         >
-          Recadrer
+          Crop
         </button>
         <button
           type="button"
           onClick={() => insertSourceAt(source.id, Math.round(currentTimeMs.value / MS_PER_CS))}
           class="flex-1 rounded bg-panel-2 px-1 py-0.5 text-[10px] text-neutral-400 hover:text-neutral-200"
-          title="Placer au playhead (sur une piste libre, en superposition si besoin)"
+          title="Place at the playhead (on a free track, overlaying if needed)"
         >
           + Timeline
         </button>

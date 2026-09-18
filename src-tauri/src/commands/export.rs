@@ -21,7 +21,7 @@ pub struct ExportPayload {
 #[tauri::command]
 pub async fn export_gif(app: AppHandle, payload: ExportPayload) -> Result<()> {
     if payload.segments.is_empty() {
-        return Err(GifForgeError::other("la timeline est vide"));
+        return Err(GifForgeError::other("timeline is empty"));
     }
     tauri::async_runtime::spawn_blocking(move || {
         let total = payload.segments.len();
@@ -56,5 +56,5 @@ pub async fn export_gif(app: AppHandle, payload: ExportPayload) -> Result<()> {
         Ok(())
     })
     .await
-    .map_err(|e| GifForgeError::other(format!("tâche d'export interrompue : {e}")))?
+    .map_err(|e| GifForgeError::other(format!("export task interrupted: {e}")))?
 }

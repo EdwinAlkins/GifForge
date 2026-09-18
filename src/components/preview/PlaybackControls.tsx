@@ -22,7 +22,7 @@ export function PlaybackControls() {
         onClick={togglePlay}
         class="rounded bg-panel-2 px-3 py-1 text-xs text-neutral-200 hover:bg-edge disabled:opacity-40"
       >
-        {isPlaying.value ? "⏸ Pause" : "▶ Lecture"}
+        {isPlaying.value ? "⏸ Pause" : "▶ Play"}
       </button>
       <button
         type="button"
@@ -32,7 +32,7 @@ export function PlaybackControls() {
       >
         ⏹ Stop
       </button>
-      <span class="text-xs tabular-nums text-neutral-500" title="Image affichée / images du GIF exporté">
+      <span class="text-xs tabular-nums text-neutral-500" title="Displayed frame / exported GIF frames">
         {total === 0 ? "—" : `${currentSegmentIndex.value + 1} / ${total}`}
       </span>
       {total > 0 && <Timecode totalMs={plan.totalCs * MS_PER_CS} />}

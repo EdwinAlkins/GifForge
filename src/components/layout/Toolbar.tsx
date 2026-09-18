@@ -27,7 +27,7 @@ export function Toolbar() {
     });
     if (!path) return;
 
-    busy.value = "Export — encodage…";
+    busy.value = "Export — encoding…";
     progress.value = { done: 0, total: segments.length };
     const unlisten = await listen<{ done: number; total: number }>(
       "export-progress",
@@ -62,7 +62,7 @@ export function Toolbar() {
         onClick={createNewProject}
         class="rounded bg-panel-2 px-2 py-1 text-xs text-neutral-300 hover:bg-edge disabled:opacity-50"
       >
-        Nouveau
+        New
       </button>
       <button
         type="button"
@@ -70,16 +70,16 @@ export function Toolbar() {
         onClick={pickAndOpenProject}
         class="rounded bg-panel-2 px-2 py-1 text-xs text-neutral-300 hover:bg-edge disabled:opacity-50"
       >
-        Ouvrir
+        Open
       </button>
       <button
         type="button"
         disabled={isBusy}
         onClick={pickAndSaveProject}
         class="rounded bg-panel-2 px-2 py-1 text-xs text-neutral-300 hover:bg-edge disabled:opacity-50"
-        title={projectPath.value ?? "Projet non enregistré"}
+        title={projectPath.value ?? "Unsaved project"}
       >
-        Enregistrer
+        Save
       </button>
 
       <span class="mx-1 h-4 w-px bg-edge" />
@@ -90,18 +90,18 @@ export function Toolbar() {
         onClick={pickAndImport}
         class="rounded bg-accent px-2.5 py-1 text-xs font-medium text-white hover:brightness-110 disabled:opacity-50"
       >
-        Importer
+        Import
       </button>
 
       <select
         value={exportQuality}
         onChange={(e) => setExportQuality(e.currentTarget.value as ExportQuality)}
         class="rounded border border-edge bg-panel-2 px-1 py-1 text-xs text-neutral-300"
-        title="Qualité d'export"
+        title="Export quality"
       >
-        <option value="fast">Export rapide</option>
-        <option value="balanced">Export équilibré</option>
-        <option value="light">Export léger</option>
+        <option value="fast">Fast export</option>
+        <option value="balanced">Balanced export</option>
+        <option value="light">Light export</option>
       </select>
 
       <button
@@ -110,7 +110,7 @@ export function Toolbar() {
         onClick={handleExport}
         class="rounded bg-panel-2 px-2.5 py-1 text-xs font-medium text-neutral-200 hover:bg-edge disabled:opacity-40"
       >
-        Exporter
+        Export
       </button>
 
       <div class="ml-auto flex items-center gap-2 text-xs">

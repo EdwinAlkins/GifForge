@@ -35,12 +35,12 @@ pub fn import_gif_to_cache(app: Option<&AppHandle>, opts: ImportOptions) -> Resu
         root
     } else {
         let handle = app.ok_or_else(|| {
-            GifForgeError::other("cache indisponible sans AppHandle ni cache_root")
+            GifForgeError::other("cache unavailable without AppHandle or cache_root")
         })?;
         handle
             .path()
             .app_cache_dir()
-            .map_err(|e| GifForgeError::other(format!("répertoire cache indisponible : {e}")))?
+            .map_err(|e| GifForgeError::other(format!("cache directory unavailable: {e}")))?
     };
 
     let frames_dir = frame_store::frames_dir(&cache);
@@ -144,7 +144,7 @@ pub fn import_gif_to_cache(app: Option<&AppHandle>, opts: ImportOptions) -> Resu
     })?;
 
     if meta.frame_count == 0 {
-        return Err(GifForgeError::other("le GIF ne contient aucune frame"));
+        return Err(GifForgeError::other("GIF contains no frames"));
     }
     frame_count = meta.frame_count;
     width = meta.width;
@@ -167,7 +167,7 @@ pub fn import_gif_to_cache(app: Option<&AppHandle>, opts: ImportOptions) -> Resu
     let filename = Path::new(&path)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "sans-nom.gif".to_string());
+        .unwrap_or_else(|| "untitled.gif".to_string());
 
     let source_thumb = timeline_frames
         .first()

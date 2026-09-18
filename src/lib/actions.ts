@@ -21,10 +21,10 @@ function bindImportProgress() {
     (e) => {
       const { phase, done, total } = e.payload;
       if (phase === "decode") {
-        busy.value = total > 0 ? `Décodage… ${done}/${total}` : `Décodage… ${done} frames`;
+        busy.value = total > 0 ? `Decoding… ${done}/${total}` : `Decoding… ${done} frames`;
         progress.value = total > 0 ? { phase, done, total } : { phase, done, total: 0 };
       } else {
-        busy.value = "Mise en cache…";
+        busy.value = "Caching…";
         progress.value = { phase: "cache", done, total };
       }
     },
@@ -33,7 +33,7 @@ function bindImportProgress() {
 
 function bindSaveProgress() {
   return listen<{ done: number; total: number }>("save-progress", (e) => {
-    busy.value = "Sauvegarde…";
+    busy.value = "Saving…";
     progress.value = e.payload;
   });
 }
@@ -44,10 +44,10 @@ function bindOpenProgress() {
     (e) => {
       const { phase, done, total } = e.payload;
       if (phase === "extract") {
-        busy.value = "Extraction de l'archive…";
+        busy.value = "Extracting archive…";
         progress.value = null;
       } else {
-        busy.value = `Reconstruction du cache… ${done}/${total}`;
+        busy.value = `Rebuilding cache… ${done}/${total}`;
         progress.value = { phase, done, total };
       }
     },
@@ -67,11 +67,11 @@ export async function pickAndImport(): Promise<void> {
   try {
     for (const path of paths) {
       progress.value = null;
-      busy.value = "Décodage…";
+      busy.value = "Decoding…";
       const result = await importGif(path);
       if (result.frames.length >= LARGE_GIF_FRAME_WARNING) {
         console.warn(
-          `GIF volumineux : ${result.frames.length} frames — l'import peut être long.`,
+          `Large GIF: ${result.frames.length} frames — import may take a while.`,
         );
       }
       addImported(result);
@@ -98,7 +98,7 @@ export async function pickAndSaveProject(): Promise<void> {
     if (!path) return;
   }
 
-  busy.value = "Sauvegarde…";
+  busy.value = "Saving…";
   progress.value = { done: 0, total: p.sources.length + 1 };
   const unlisten = await bindSaveProgress();
   try {
@@ -119,7 +119,7 @@ export async function pickAndOpenProject(): Promise<void> {
   });
   if (!path || Array.isArray(path)) return;
 
-  busy.value = "Ouverture…";
+  busy.value = "Opening…";
   progress.value = null;
   const unlisten = await bindOpenProgress();
   try {
