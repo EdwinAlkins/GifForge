@@ -99,7 +99,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: gifforge-linux
-          path: src-tauri/target/release/bundle/
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
   publish-release:
