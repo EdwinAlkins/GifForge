@@ -1,10 +1,17 @@
-import { isPlaying, togglePlay, stop, currentFrameIndex } from "../../stores/playbackStore";
-import { timeline } from "../../stores/projectStore";
+import {
+  isPlaying,
+  togglePlay,
+  stop,
+  currentTimeMs,
+  currentSegmentIndex,
+} from "../../stores/playbackStore";
+import { renderPlan } from "../../stores/projectStore";
+import { formatTimecode, MS_PER_CS } from "../../lib/timelineModel";
 
-/** Transport controls under the preview. The actual rAF playback loop arrives
- *  in Jalon 1 (usePlayback); here the buttons drive the shared signals. */
+/** Transport controls under the preview. */
 export function PlaybackControls() {
-  const total = timeline.value.length;
+  const plan = renderPlan.value;
+  const total = plan.segments.length;
   const disabled = total === 0;
 
   return (
@@ -25,9 +32,19 @@ export function PlaybackControls() {
       >
         ⏹ Stop
       </button>
-      <span class="text-xs tabular-nums text-neutral-500">
-        {total === 0 ? "—" : `${currentFrameIndex.value + 1} / ${total}`}
+      <span class="text-xs tabular-nums text-neutral-500" title="Image affichée / images du GIF exporté">
+        {total === 0 ? "—" : `${currentSegmentIndex.value + 1} / ${total}`}
       </span>
+      {total > 0 && <Timecode totalMs={plan.totalCs * MS_PER_CS} />}
     </div>
+  );
+}
+
+/** Isolated so that only this text re-renders on every playback tick. */
+function Timecode({ totalMs }: { totalMs: number }) {
+  return (
+    <span class="text-xs tabular-nums text-neutral-400">
+      {formatTimecode(currentTimeMs.value)} / {formatTimecode(totalMs)}
+    </span>
   );
 }

@@ -1,7 +1,8 @@
 import { useEffect } from "preact/hooks";
-import { togglePlay, currentFrameIndex } from "../stores/playbackStore";
+import { togglePlay, stepFrame, seek, splitAtPlayhead } from "../stores/playbackStore";
+import { MS_PER_CS } from "../lib/timelineModel";
 import {
-  timeline,
+  timelineModel,
   selectedSourceId,
   deleteSelectedFrames,
   selectedFrameIds,
@@ -15,7 +16,7 @@ export function useKeyboardShortcuts(): void {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
 
-      const frames = timeline.value;
+      const empty = timelineModel.value.frameCount === 0;
       const mod = e.ctrlKey || e.metaKey;
 
       if (mod && e.key === "z" && !e.shiftKey) {
@@ -44,25 +45,39 @@ export function useKeyboardShortcuts(): void {
           }
           break;
         case " ":
-          if (frames.length > 0) {
+          if (!empty) {
             e.preventDefault();
             selectedSourceId.value = null;
             togglePlay();
           }
           break;
         case "ArrowRight":
-          if (frames.length > 0) {
+          if (!empty) {
             e.preventDefault();
             selectedSourceId.value = null;
-            currentFrameIndex.value = (currentFrameIndex.value + 1) % frames.length;
+            stepFrame(1);
           }
           break;
+        case "s":
+        case "S":
+          if (!empty && !mod) {
+            e.preventDefault();
+            splitAtPlayhead();
+          }
+          break;
+        case "Home":
+          e.preventDefault();
+          seek(0);
+          break;
+        case "End":
+          e.preventDefault();
+          seek(timelineModel.value.endCs * MS_PER_CS);
+          break;
         case "ArrowLeft":
-          if (frames.length > 0) {
+          if (!empty) {
             e.preventDefault();
             selectedSourceId.value = null;
-            currentFrameIndex.value =
-              (currentFrameIndex.value - 1 + frames.length) % frames.length;
+            stepFrame(-1);
           }
           break;
       }

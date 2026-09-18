@@ -6,8 +6,9 @@ export const LARGE_GIF_FRAME_WARNING = 500;
 /** Hard confirmation threshold (future UI dialog). */
 export const LARGE_GIF_FRAME_CONFIRM = 2000;
 
-/** Preview prefetch radius while playing. */
-export const PREFETCH_RADIUS = 8;
+/** Frames decoded ahead of / behind the playhead while playing. */
+export const PREFETCH_AHEAD = 8;
+export const PREFETCH_BEHIND = 4;
 
 /** LRU cache sizes for full-res and thumbnail asset URLs. */
 export const FULL_RES_CACHE_MAX = 32;

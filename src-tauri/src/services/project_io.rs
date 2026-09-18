@@ -238,6 +238,7 @@ pub fn hydrate_project_with_cache(
             frame_path: template.frame_path.clone(),
             duration_cs: saved_tf.duration_cs,
             track_index: saved_tf.track_index,
+            clip_id: saved_tf.clip_id.clone(),
             thumbnail_path: template.thumbnail_path.clone(),
             thumbnail: None,
         });
@@ -250,6 +251,7 @@ pub fn hydrate_project_with_cache(
         modified_at: saved.modified_at,
         sources,
         timeline,
+        clips: saved.clips,
         source_frames: Some(banks),
     })
 }
@@ -261,7 +263,7 @@ pub fn read_saved_project(extract_root: &Path) -> Result<SavedProject> {
 
 fn project_for_disk(project: &Project) -> SavedProject {
     SavedProject {
-        version: project.version.max(2),
+        version: project.version.max(3),
         name: project.name.clone(),
         created_at: project.created_at.clone(),
         modified_at: project.modified_at.clone(),
@@ -288,8 +290,10 @@ fn project_for_disk(project: &Project) -> SavedProject {
                 source_frame_index: f.source_frame_index,
                 duration_cs: f.duration_cs,
                 track_index: f.track_index,
+                clip_id: f.clip_id.clone(),
             })
             .collect(),
+        clips: project.clips.clone(),
     }
 }
 

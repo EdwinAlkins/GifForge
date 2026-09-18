@@ -8,9 +8,8 @@ import {
   createNewProject,
 } from "../../lib/actions";
 import { exportGif } from "../../lib/tauri";
-import { timeline, sources, projectPath, project } from "../../stores/projectStore";
+import { renderPlan, sources, projectPath, project } from "../../stores/projectStore";
 import { busy, errorMessage, progress, progressPercent, reportError } from "../../stores/uiStore";
-import { sortFramesForExport } from "../../lib/timelineLayout";
 import type { ExportQuality } from "../../lib/types";
 
 export function Toolbar() {
@@ -19,8 +18,8 @@ export function Toolbar() {
   const [exportQuality, setExportQuality] = useState<ExportQuality>("balanced");
 
   async function handleExport() {
-    const frames = timeline.value;
-    if (frames.length === 0) return;
+    const segments = renderPlan.value.segments;
+    if (segments.length === 0) return;
 
     const path = await save({
       defaultPath: "export.gif",
@@ -28,24 +27,18 @@ export function Toolbar() {
     });
     if (!path) return;
 
-    busy.value = "Export en cours…";
-    progress.value = { done: 0, total: frames.length * 2 };
+    busy.value = "Export — encodage…";
+    progress.value = { done: 0, total: segments.length };
     const unlisten = await listen<{ done: number; total: number }>(
       "export-progress",
       (e) => {
         progress.value = e.payload;
-        const { done, total } = e.payload;
-        if (total > 0 && done <= total / 2) {
-          busy.value = "Export — lecture des frames…";
-        } else if (total > 0) {
-          busy.value = "Export — encodage…";
-        }
       },
     );
     try {
       await exportGif(
         path,
-        sortFramesForExport(frames),
+        segments,
         sources.value,
         project.value,
         exportQuality,
@@ -113,7 +106,7 @@ export function Toolbar() {
 
       <button
         type="button"
-        disabled={isBusy || timeline.value.length === 0}
+        disabled={isBusy || renderPlan.value.segments.length === 0}
         onClick={handleExport}
         class="rounded bg-panel-2 px-2.5 py-1 text-xs font-medium text-neutral-200 hover:bg-edge disabled:opacity-40"
       >

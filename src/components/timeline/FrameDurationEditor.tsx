@@ -4,6 +4,7 @@ import {
   setFrameDuration,
   setSelectedFramesDuration,
 } from "../../stores/projectStore";
+import { MAX_DURATION_CS } from "../../lib/timelineModel";
 
 /** Edit duration (centiseconds) for selected timeline frames. */
 export function FrameDurationEditor() {
@@ -31,7 +32,7 @@ export function FrameDurationEditor() {
       <input
         type="number"
         min={1}
-        max={255}
+        max={MAX_DURATION_CS}
         value={value}
         onInput={(e) => setValue(e.currentTarget.value)}
         class="w-16 rounded border border-edge bg-panel-2 px-2 py-0.5 text-neutral-200"

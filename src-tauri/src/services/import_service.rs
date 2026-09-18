@@ -98,6 +98,7 @@ pub fn import_gif_to_cache(app: Option<&AppHandle>, opts: ImportOptions) -> Resu
                     frame_path: pf.frame_path.to_string_lossy().into_owned(),
                     duration_cs: pf.duration_cs,
                     track_index: 0,
+                    clip_id: None,
                     thumbnail_path: Some(pf.thumb_path.to_string_lossy().into_owned()),
                     thumbnail: None,
                 })

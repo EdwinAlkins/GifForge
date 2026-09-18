@@ -18,9 +18,10 @@ pub struct GifMeta {
     pub frame_count: usize,
 }
 
+/// Delay in centiseconds, over the whole 16-bit range of the GIF field.
 fn duration_cs_from_delay(numer: u32, denom: u32) -> u16 {
     let ms = if denom == 0 { 100 } else { numer as u64 / denom as u64 };
-    (((ms + 5) / 10).clamp(1, 255)) as u16
+    ((ms + 5) / 10).clamp(1, u16::MAX as u64) as u16
 }
 
 /// Stream-decode a GIF frame-by-frame without holding all frames in memory.

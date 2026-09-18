@@ -2,8 +2,10 @@ import type { SourceAsset } from "../../lib/types";
 import {
   selectSource,
   selectedSourceId,
-  appendSourceToTimeline,
+  insertSourceAt,
 } from "../../stores/projectStore";
+import { currentTimeMs } from "../../stores/playbackStore";
+import { MS_PER_CS } from "../../lib/timelineModel";
 import { resolveThumbUrl } from "../../lib/assetCache";
 
 interface Props {
@@ -52,9 +54,9 @@ export function SourceItem({ source }: Props) {
         </button>
         <button
           type="button"
-          onClick={() => appendSourceToTimeline(source.id, true)}
+          onClick={() => insertSourceAt(source.id, Math.round(currentTimeMs.value / MS_PER_CS))}
           class="flex-1 rounded bg-panel-2 px-1 py-0.5 text-[10px] text-neutral-400 hover:text-neutral-200"
-          title="Insérer les frames après le playhead"
+          title="Placer au playhead (sur une piste libre, en superposition si besoin)"
         >
           + Timeline
         </button>

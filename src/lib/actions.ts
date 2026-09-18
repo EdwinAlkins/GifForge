@@ -10,6 +10,7 @@ import {
 } from "../stores/projectStore";
 import { busy, progress, reportError } from "../stores/uiStore";
 import { clearHistory } from "../stores/historyStore";
+import { stop } from "../stores/playbackStore";
 import { clearAssetCache } from "./assetCache";
 import { clearAssetUrlCache } from "./assetUrls";
 import { LARGE_GIF_FRAME_WARNING } from "./settings";
@@ -126,6 +127,7 @@ export async function pickAndOpenProject(): Promise<void> {
     clearAssetUrlCache();
     const loaded = await openProject(path);
     loadProjectFromDisk(path, loaded);
+    stop();
     clearHistory();
   } catch (err) {
     reportError(err);
@@ -140,5 +142,6 @@ export function createNewProject(): void {
   clearAssetCache();
   clearAssetUrlCache();
   newProject();
+  stop();
   clearHistory();
 }

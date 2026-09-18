@@ -5,13 +5,15 @@ import { perfDev } from "./perfDev";
 
 const FULL_MAX = 32;
 const THUMB_MAX = 256;
+/** Decoded full-res frames kept alive (≈ 8 MB each at 1080p). */
+const DECODED_MAX = 16;
 
-class LruCache {
-  private map = new Map<string, string>();
+class LruCache<V = string> {
+  private map = new Map<string, V>();
 
   constructor(private max: number) {}
 
-  get(key: string): string | undefined {
+  get(key: string): V | undefined {
     const v = this.map.get(key);
     if (v === undefined) return undefined;
     this.map.delete(key);
@@ -19,7 +21,7 @@ class LruCache {
     return v;
   }
 
-  set(key: string, value: string): void {
+  set(key: string, value: V): void {
     if (this.map.has(key)) this.map.delete(key);
     this.map.set(key, value);
     while (this.map.size > this.max) {
@@ -27,6 +29,10 @@ class LruCache {
       if (oldest) this.map.delete(oldest);
     }
     perfDev.setAssetCacheSize(this.map.size);
+  }
+
+  delete(key: string): void {
+    this.map.delete(key);
   }
 
   clear(): void {
@@ -38,6 +44,8 @@ class LruCache {
 const fullCache = new LruCache(FULL_MAX);
 const thumbCache = new LruCache(THUMB_MAX);
 const inflight = new Map<string, Promise<string>>();
+/** Decode promises by asset URL: holding the element keeps WebKit's decoded bitmap alive. */
+const decodedCache = new LruCache<Promise<HTMLImageElement>>(DECODED_MAX);
 
 export function peekFrameUrl(
   framePath: string,
@@ -78,6 +86,23 @@ export async function loadFrameUrl(
   return pending;
 }
 
+/**
+ * Resolve and fully decode a frame ahead of display, so that swapping the preview `src`
+ * during playback does not wait on PNG decoding.
+ */
+export async function prefetchFrame(framePath: string, crop?: CropRect | null): Promise<void> {
+  const url = await loadFrameUrl(framePath, crop);
+  if (decodedCache.get(url)) return;
+  const img = new Image();
+  img.src = url;
+  const decoding = img.decode().then(() => img);
+  decodedCache.set(url, decoding);
+  await decoding.catch((err) => {
+    decodedCache.delete(url);
+    throw err;
+  });
+}
+
 export function resolveThumbUrl(thumbnailPath?: string, legacy?: string): string | undefined {
   if (thumbnailPath) {
     const cached = thumbCache.get(thumbnailPath);
@@ -92,5 +117,6 @@ export function resolveThumbUrl(thumbnailPath?: string, legacy?: string): string
 export function clearAssetCache(): void {
   fullCache.clear();
   thumbCache.clear();
+  decodedCache.clear();
   inflight.clear();
 }

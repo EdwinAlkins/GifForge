@@ -1,36 +1,37 @@
 import { useEffect } from "preact/hooks";
-import { isPlaying, currentFrameIndex } from "../stores/playbackStore";
-import { timeline, sources } from "../stores/projectStore";
-import { loadFrameUrl } from "../lib/assetCache";
-
-import { PREFETCH_RADIUS } from "../lib/settings";
+import { isPlaying, currentSegmentIndex } from "../stores/playbackStore";
+import { renderPlan, sources } from "../stores/projectStore";
+import { prefetchFrame } from "../lib/assetCache";
+import { PREFETCH_AHEAD, PREFETCH_BEHIND } from "../lib/settings";
 
 /**
- * Prefetch ±8 frames around the playhead while playing (or on seek).
- * Cancels naturally when indices leave the window via LRU eviction.
+ * Decode the layers of the segments around the playhead: next 8 / previous 4 while
+ * playing, ±2 when paused (scrubbing / stepping). Nearest segments first.
  */
 export function useFramePrefetch(): void {
   const playing = isPlaying.value;
-  const index = currentFrameIndex.value;
-  const frames = timeline.value;
+  const position = currentSegmentIndex.value;
+  const plan = renderPlan.value;
   const srcList = sources.value;
 
   useEffect(() => {
-    if (frames.length === 0) return;
+    const n = plan.segments.length;
+    if (n === 0 || position < 0) return;
 
-    const indices = new Set<number>();
-    const radius = playing ? PREFETCH_RADIUS : 2;
-    for (let d = -radius; d <= radius; d++) {
-      const i = (index + d + frames.length * 2) % frames.length;
-      indices.add(i);
+    const ahead = playing ? PREFETCH_AHEAD : 2;
+    const behind = playing ? PREFETCH_BEHIND : 2;
+    const seen = new Set<number>();
+    for (let d = 0; d <= Math.max(ahead, behind); d++) {
+      for (const offset of d === 0 ? [0] : [d, -d]) {
+        if (offset > ahead || -offset > behind) continue;
+        const k = (((position + offset) % n) + n) % n;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        for (const frame of plan.segments[k].layers) {
+          const crop = srcList.find((s) => s.id === frame.sourceId)?.crop ?? null;
+          prefetchFrame(frame.framePath, crop).catch(() => {});
+        }
+      }
     }
-
-    for (const i of indices) {
-      const frame = frames[i];
-      if (!frame) continue;
-      const src = srcList.find((s) => s.id === frame.sourceId);
-      const crop = src?.crop ?? null;
-      loadFrameUrl(frame.framePath, crop).catch(() => {});
-    }
-  }, [playing, index, frames, srcList]);
+  }, [playing, position, plan, srcList]);
 }

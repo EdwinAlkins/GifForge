@@ -1,9 +1,17 @@
 import { signal, computed } from "@preact/signals";
-import type { Project, SourceAsset, TimelineFrame, CropRect } from "../lib/types";
+import type { Project, SourceAsset, TimelineClip, CropRect } from "../lib/types";
+import { PROJECT_VERSION } from "../lib/types";
 import type { ImportResult } from "../lib/tauri";
 import { pushHistory } from "./historyStore";
-import { currentFrameIndex } from "./playbackStore";
-import { invalidateLayoutMemo } from "../lib/timelineLayoutMemo";
+import {
+  buildRenderPlan,
+  buildTimelineModel,
+  clipAt,
+  clipDurationCs,
+  isFree,
+  MAX_DURATION_CS,
+  upperBound,
+} from "../lib/timelineModel";
 
 /** The currently open project. null until a project is created or opened. */
 export const project = signal<Project | null>(null);
@@ -18,41 +26,97 @@ export const selectedSourceId = signal<string | null>(null);
 export const selectedFrameIds = signal<Set<string>>(new Set());
 
 export const sources = computed<SourceAsset[]>(() => project.value?.sources ?? []);
-export const timeline = computed<TimelineFrame[]>(() => project.value?.timeline ?? []);
+export const clips = computed<TimelineClip[]>(() => project.value?.clips ?? []);
+
+/** Time index of the clips — rebuilt only when `clips` changes (not on zoom/scroll). */
+export const timelineModel = computed(() => buildTimelineModel(clips.value));
+
+/** Timeline cut into segments of constant visible frames: preview, playback and export. */
+export const renderPlan = computed(() => buildRenderPlan(timelineModel.value));
 
 export function createEmptyProject(name = "Sans titre"): Project {
   const now = new Date().toISOString();
   return {
-    version: 1,
+    version: PROJECT_VERSION,
     name,
     createdAt: now,
     modifiedAt: now,
     sources: [],
-    timeline: [],
+    clips: [],
     sourceFrames: {},
   };
 }
 
 /** Replace the project, stamping modifiedAt. Use for any mutation. */
 export function setProject(next: Project): void {
-  invalidateLayoutMemo();
   project.value = { ...next, modifiedAt: new Date().toISOString() };
 }
 
-export function selectSource(id: string | null): void {
-  selectedSourceId.value = id;
+function setClips(p: Project, next: TimelineClip[]): void {
+  setProject({ ...p, clips: next });
 }
 
-/** Append an imported GIF's source and its frames to the current project. */
+/**
+ * Shift clips right on the given tracks until none overlap (a clip that grew pushes
+ * the following ones). Clips never move left, so gaps are preserved.
+ */
+function resolveOverlaps(list: TimelineClip[], tracks: Set<number>): TimelineClip[] {
+  const byTrack = new Map<number, TimelineClip[]>();
+  for (const c of list) {
+    if (tracks.has(c.trackIndex)) {
+      if (!byTrack.has(c.trackIndex)) byTrack.set(c.trackIndex, []);
+      byTrack.get(c.trackIndex)!.push(c);
+    }
+  }
+  const moved = new Map<string, TimelineClip>();
+  for (const trackClips of byTrack.values()) {
+    trackClips.sort((a, b) => a.startCs - b.startCs);
+    let end = 0;
+    for (const c of trackClips) {
+      const start = Math.max(c.startCs, end);
+      if (start !== c.startCs) moved.set(c.id, { ...c, startCs: start });
+      end = start + clipDurationCs(c);
+    }
+  }
+  return moved.size === 0 ? list : list.map((c) => moved.get(c.id) ?? c);
+}
+
+function trackEndCs(trackIndex: number): number {
+  const track = timelineModel.value.tracks[trackIndex];
+  return track && track.clips.length > 0 ? track.ends[track.ends.length - 1] : 0;
+}
+
+/** Add an imported GIF's source and place its frames as a clip at the end of V1. */
 export function addImported({ source, frames }: ImportResult): void {
   pushHistory();
   const p = project.value ?? createEmptyProject();
+  const startCs = project.value ? trackEndCs(0) : 0;
   setProject({
     ...p,
     sources: [...p.sources, source],
-    timeline: [...p.timeline, ...frames],
+    clips: [...p.clips, { id: crypto.randomUUID(), trackIndex: 0, startCs, frames }],
     sourceFrames: { ...p.sourceFrames, [source.id]: frames },
   });
+}
+
+/**
+ * Place a new clip of all the source's frames at `timeCs`, on the lowest track where it
+ * fits (a new track above the others if none) — dropping on the playhead over an
+ * existing clip therefore creates an overlay.
+ */
+export function insertSourceAt(sourceId: string, timeCs: number): void {
+  const p = project.value;
+  const bank = p?.sourceFrames?.[sourceId];
+  if (!p || !bank || bank.length === 0) return;
+
+  const frames = bank.map((f) => ({ ...f, id: crypto.randomUUID(), thumbnail: undefined }));
+  const length = frames.reduce((d, f) => d + f.durationCs, 0);
+  const tracks = timelineModel.value.tracks;
+  let trackIndex = tracks.findIndex((t) => isFree(t, timeCs, length));
+  if (trackIndex < 0) trackIndex = tracks.length;
+
+  pushHistory();
+  setClips(p, [...p.clips, { id: crypto.randomUUID(), trackIndex, startCs: timeCs, frames }]);
 }
 
 export function setSourceCrop(sourceId: string, crop: CropRect | null): void {
@@ -65,6 +129,12 @@ export function setSourceCrop(sourceId: string, crop: CropRect | null): void {
   });
 }
 
+// ── Selection ────────────────────────────────────────────────────────────────
+
+export function selectSource(id: string | null): void {
+  selectedSourceId.value = id;
+}
+
 export function selectFrameRange(frameIds: string[], extend: boolean): void {
   const next = extend ? new Set(selectedFrameIds.value) : new Set<string>();
   for (const id of frameIds) next.add(id);
@@ -73,10 +143,21 @@ export function selectFrameRange(frameIds: string[], extend: boolean): void {
 }
 
 export function selectAllFrames(): void {
-  const p = project.value;
-  if (!p) return;
-  selectedFrameIds.value = new Set(p.timeline.map((f) => f.id));
-  selectedSourceId.value = null;
+  selectFrameRange(clips.value.flatMap((c) => c.frames.map((f) => f.id)), false);
+}
+
+/** Select every frame of a clip (toggling it when `extend` and already selected). */
+export function selectClip(clipId: string, extend: boolean): void {
+  const clip = timelineModel.value.clipById.get(clipId)?.clip;
+  if (!clip) return;
+  const ids = clip.frames.map((f) => f.id);
+  if (extend && ids.every((id) => selectedFrameIds.value.has(id))) {
+    const next = new Set(selectedFrameIds.value);
+    for (const id of ids) next.delete(id);
+    selectedFrameIds.value = next;
+    return;
+  }
+  selectFrameRange(ids, extend);
 }
 
 export function toggleFrameSelection(frameId: string, extend: boolean): void {
@@ -94,145 +175,181 @@ export function clearFrameSelection(): void {
   selectedFrameIds.value = new Set();
 }
 
+/** Ids of clips holding at least one selected frame. */
+export function clipsWithSelection(): Set<string> {
+  const out = new Set<string>();
+  const loc = timelineModel.value.frameById;
+  for (const id of selectedFrameIds.value) {
+    const l = loc.get(id);
+    if (l) out.add(l.clip.clip.id);
+  }
+  return out;
+}
+
+// ── Edits ────────────────────────────────────────────────────────────────────
+
+/** Remove selected frames; the rest of each clip closes up, empty clips disappear. */
 export function deleteSelectedFrames(): void {
   const ids = selectedFrameIds.value;
-  if (ids.size === 0) return;
   const p = project.value;
-  if (!p) return;
+  if (ids.size === 0 || !p) return;
   pushHistory();
-  const timelineNext = p.timeline.filter((f) => !ids.has(f.id));
-  setProject({ ...p, timeline: timelineNext });
+  const next = p.clips
+    .map((c) =>
+      c.frames.some((f) => ids.has(f.id)) ? { ...c, frames: c.frames.filter((f) => !ids.has(f.id)) } : c,
+    )
+    .filter((c) => c.frames.length > 0);
+  setClips(p, next);
   selectedFrameIds.value = new Set();
-  if (currentFrameIndex.value >= timelineNext.length) {
-    currentFrameIndex.value = Math.max(0, timelineNext.length - 1);
-  }
+}
+
+function clampDurationCs(durationCs: number): number {
+  return Math.min(MAX_DURATION_CS, Math.max(1, Math.round(durationCs)));
+}
+
+function setDurations(ids: Set<string>, durationCs: number): void {
+  const p = project.value;
+  if (ids.size === 0 || !p) return;
+  const d = clampDurationCs(durationCs);
+  pushHistory();
+  const touched = new Set<number>();
+  const next = p.clips.map((c) => {
+    if (!c.frames.some((f) => ids.has(f.id))) return c;
+    touched.add(c.trackIndex);
+    return { ...c, frames: c.frames.map((f) => (ids.has(f.id) ? { ...f, durationCs: d } : f)) };
+  });
+  setClips(p, resolveOverlaps(next, touched));
 }
 
 export function setFrameDuration(frameId: string, durationCs: number): void {
-  const clamped = Math.min(255, Math.max(1, Math.round(durationCs)));
-  const p = project.value;
-  if (!p) return;
-  pushHistory();
-  setProject({
-    ...p,
-    timeline: p.timeline.map((f) =>
-      f.id === frameId ? { ...f, durationCs: clamped } : f,
-    ),
-  });
+  setDurations(new Set([frameId]), durationCs);
 }
 
 export function setSelectedFramesDuration(durationCs: number): void {
-  const ids = selectedFrameIds.value;
-  if (ids.size === 0) return;
-  const clamped = Math.min(255, Math.max(1, Math.round(durationCs)));
-  const p = project.value;
-  if (!p) return;
-  pushHistory();
-  setProject({
-    ...p,
-    timeline: p.timeline.map((f) =>
-      ids.has(f.id) ? { ...f, durationCs: clamped } : f,
-    ),
-  });
-}
-
-export function reorderTimeline(fromIndex: number, toIndex: number): void {
-  const p = project.value;
-  if (!p || fromIndex === toIndex) return;
-  const tl = [...p.timeline];
-  const [item] = tl.splice(fromIndex, 1);
-  tl.splice(toIndex, 0, item);
-  pushHistory();
-  setProject({ ...p, timeline: tl });
+  setDurations(selectedFrameIds.value, durationCs);
 }
 
 /**
- * Move all selected frames to a target track and insert position (block move).
- * Preserves relative order within the selection.
+ * Where the clips would land if shifted by `deltaCs` / `deltaTrack`, or null if a clip
+ * would leave the timeline or overlap a clip that is not moving.
  */
-export function moveSelectedFrames(
-  targetTrack: number,
-  insertBeforeGlobalIndex: number,
-): void {
-  const ids = selectedFrameIds.value;
-  if (ids.size === 0) return;
-  const p = project.value;
-  if (!p) return;
-
-  const selected = p.timeline.filter((f) => ids.has(f.id));
-  const remaining = p.timeline.filter((f) => !ids.has(f.id));
-  const moved = selected.map((f) => ({ ...f, trackIndex: targetTrack }));
-
-  let insertAt = insertBeforeGlobalIndex;
-  for (const f of p.timeline.slice(0, insertBeforeGlobalIndex)) {
-    if (ids.has(f.id)) insertAt--;
+export function planClipMove(
+  clipIds: Set<string>,
+  deltaCs: number,
+  deltaTrack: number,
+): TimelineClip[] | null {
+  const model = timelineModel.value;
+  const moved: TimelineClip[] = [];
+  for (const id of clipIds) {
+    const cm = model.clipById.get(id);
+    if (!cm) continue;
+    const trackIndex = cm.clip.trackIndex + deltaTrack;
+    const startCs = cm.startCs + deltaCs;
+    if (trackIndex < 0 || !isFree(model.tracks[trackIndex], startCs, cm.endCs - cm.startCs, clipIds)) {
+      return null;
+    }
+    moved.push({ ...cm.clip, trackIndex, startCs });
   }
-  insertAt = Math.max(0, Math.min(remaining.length, insertAt));
-
-  pushHistory();
-  const newTimeline = [
-    ...remaining.slice(0, insertAt),
-    ...moved,
-    ...remaining.slice(insertAt),
-  ];
-  setProject({ ...p, timeline: newTimeline });
-  selectedFrameIds.value = new Set(moved.map((f) => f.id));
+  return moved;
 }
 
-/** Move a contiguous block (already selected) by drag-drop between two global indices. */
-export function moveFrameBlock(fromIndices: number[], toGlobalIndex: number): void {
-  if (fromIndices.length === 0) return;
+export function moveClips(clipIds: Set<string>, deltaCs: number, deltaTrack: number): boolean {
   const p = project.value;
-  if (!p) return;
-
-  const ids = new Set(fromIndices.map((i) => p.timeline[i].id));
-  const selected = p.timeline.filter((f) => ids.has(f.id));
-  const remaining = p.timeline.filter((f) => !ids.has(f.id));
-
-  let insertAt = toGlobalIndex;
-  for (let i = 0; i < toGlobalIndex; i++) {
-    if (ids.has(p.timeline[i].id)) insertAt--;
-  }
-  insertAt = Math.max(0, Math.min(remaining.length, insertAt));
-
+  const moved = p && planClipMove(clipIds, deltaCs, deltaTrack);
+  if (!p || !moved || (deltaCs === 0 && deltaTrack === 0)) return false;
   pushHistory();
-  setProject({
-    ...p,
-    timeline: [...remaining.slice(0, insertAt), ...selected, ...remaining.slice(insertAt)],
+  const byId = new Map(moved.map((c) => [c.id, c]));
+  setClips(p, p.clips.map((c) => byId.get(c.id) ?? c));
+  return true;
+}
+
+/** Where dropped frames go: inside a clip (before frame `index`) or as a new clip. */
+export type FrameDropTarget =
+  | { kind: "insert"; clipId: string; index: number }
+  | { kind: "new"; trackIndex: number; startCs: number };
+
+/** Drop target for frames released at `timeCs` on `trackIndex`. */
+export function frameDropTarget(trackIndex: number, timeCs: number): FrameDropTarget {
+  const cm = clipAt(timelineModel.value.tracks[trackIndex], timeCs);
+  if (!cm) return { kind: "new", trackIndex, startCs: Math.max(0, Math.round(timeCs)) };
+  // Nearest frame boundary.
+  const i = upperBound(cm.frameStarts, timeCs) - 1;
+  const mid = (cm.frameStarts[i] + cm.frameStarts[i + 1]) / 2;
+  return { kind: "insert", clipId: cm.clip.id, index: timeCs < mid ? i : i + 1 };
+}
+
+/**
+ * Move frames (in timeline order) to `target`. Source clips close up; the target clip
+ * grows and pushes the following clips of its track if needed.
+ */
+export function moveFrames(frameIds: Set<string>, target: FrameDropTarget): void {
+  const p = project.value;
+  if (!p || frameIds.size === 0) return;
+  const loc = timelineModel.value.frameById;
+  const moving = [...frameIds]
+    .map((id) => loc.get(id))
+    .filter((l): l is NonNullable<typeof l> => !!l)
+    .sort(
+      (a, b) =>
+        a.clip.frameStarts[a.index] - b.clip.frameStarts[b.index] ||
+        a.clip.clip.trackIndex - b.clip.clip.trackIndex,
+    )
+    .map((l) => l.clip.clip.frames[l.index]);
+  if (moving.length === 0) return;
+
+  let next: TimelineClip[] = p.clips.map((c) => {
+    if (target.kind === "insert" && c.id === target.clipId) {
+      // Account for moved frames that sat before the insertion point of this clip.
+      const before = c.frames.slice(0, target.index).filter((f) => !frameIds.has(f.id));
+      const after = c.frames.slice(target.index).filter((f) => !frameIds.has(f.id));
+      return { ...c, frames: [...before, ...moving, ...after] };
+    }
+    return c.frames.some((f) => frameIds.has(f.id))
+      ? { ...c, frames: c.frames.filter((f) => !frameIds.has(f.id)) }
+      : c;
   });
-}
+  next = next.filter((c) => c.frames.length > 0);
 
-/** Append copies of a source's frames to the timeline (multi-GIF merge). */
-export function appendSourceToTimeline(sourceId: string, atPlayhead = false): void {
-  const p = project.value;
-  if (!p) return;
-
-  const bank = p.sourceFrames?.[sourceId];
-  const seenIndices = new Set<number>();
-  const template =
-    bank ??
-    p.timeline.filter((f) => {
-      if (f.sourceId !== sourceId || seenIndices.has(f.sourceFrameIndex ?? 0)) return false;
-      seenIndices.add(f.sourceFrameIndex ?? 0);
-      return true;
-    });
-  if (template.length === 0) return;
+  let track: number;
+  if (target.kind === "new") {
+    track = target.trackIndex;
+    next.push({ id: crypto.randomUUID(), trackIndex: track, startCs: target.startCs, frames: moving });
+  } else {
+    track = p.clips.find((c) => c.id === target.clipId)?.trackIndex ?? 0;
+  }
 
   pushHistory();
-  const clones = template.map((f) => ({
-    ...f,
-    id: crypto.randomUUID(),
-    thumbnail: undefined,
-  }));
+  setClips(p, resolveOverlaps(next, new Set([track])));
+}
 
-  let tl = [...p.timeline];
-  if (atPlayhead && tl.length > 0) {
-    const idx = Math.min(currentFrameIndex.value + 1, tl.length);
-    tl.splice(idx, 0, ...clones);
-  } else {
-    tl = [...tl, ...clones];
+/**
+ * Split clips at the frame boundary under `timeCs`: the frame on screen starts the
+ * right-hand clip. Only `clipIds` when given, otherwise every clip under the playhead.
+ */
+export function splitClipsAt(timeCs: number, clipIds?: Set<string>): boolean {
+  const p = project.value;
+  if (!p) return false;
+  const model = timelineModel.value;
+  const parts = new Map<string, TimelineClip[]>();
+  for (const track of model.tracks) {
+    const cm = clipAt(track, timeCs);
+    if (!cm || (clipIds && clipIds.size > 0 && !clipIds.has(cm.clip.id))) continue;
+    const i = upperBound(cm.frameStarts, timeCs) - 1;
+    if (i <= 0) continue;
+    parts.set(cm.clip.id, [
+      { ...cm.clip, frames: cm.clip.frames.slice(0, i) },
+      {
+        id: crypto.randomUUID(),
+        trackIndex: cm.clip.trackIndex,
+        startCs: cm.frameStarts[i],
+        frames: cm.clip.frames.slice(i),
+      },
+    ]);
   }
-  setProject({ ...p, timeline: tl });
+  if (parts.size === 0) return false;
+  pushHistory();
+  setClips(p, p.clips.flatMap((c) => parts.get(c.id) ?? [c]));
+  return true;
 }
 
 export function loadProjectFromDisk(path: string, loaded: Project): void {
@@ -240,7 +357,6 @@ export function loadProjectFromDisk(path: string, loaded: Project): void {
   project.value = loaded;
   selectedFrameIds.value = new Set();
   selectedSourceId.value = null;
-  currentFrameIndex.value = 0;
 }
 
 export function newProject(): void {
@@ -248,5 +364,4 @@ export function newProject(): void {
   project.value = createEmptyProject();
   selectedFrameIds.value = new Set();
   selectedSourceId.value = null;
-  currentFrameIndex.value = 0;
 }

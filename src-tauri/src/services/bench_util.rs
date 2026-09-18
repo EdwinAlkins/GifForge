@@ -8,10 +8,11 @@ use image::codecs::gif::{GifEncoder, Repeat};
 use image::{Delay, Frame, Rgba, RgbaImage};
 
 /// Peak resident set size in KiB from `/proc/self/status` (Linux only).
+/// `VmHWM` is the resident high-water mark; `VmPeak` would be virtual memory.
 pub fn peak_rss_kib() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("VmPeak:") {
+        if let Some(rest) = line.strip_prefix("VmHWM:") {
             let kib: u64 = rest.trim().trim_end_matches(" kB").parse().ok()?;
             return Some(kib);
         }

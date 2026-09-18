@@ -42,10 +42,33 @@ pub struct TimelineFrame {
     pub duration_cs: u16,
     #[serde(default)]
     pub track_index: u32,
+    /// Clip this frame belongs to; `None` in pre-clip (v2) projects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnail_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnail: Option<String>,
+}
+
+/// A clip on the timeline: its frames (those with this `clip_id`, in timeline order)
+/// play back-to-back from `start_cs`. Tracks share one time axis; higher tracks are
+/// composited on top of lower ones.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineClip {
+    pub id: String,
+    pub track_index: u32,
+    pub start_cs: u32,
+}
+
+/// One output frame of the export: the frames visible during `duration_cs`,
+/// bottom track first. No layer means a transparent frame (gap in the timeline).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSegment {
+    pub duration_cs: u16,
+    pub layers: Vec<TimelineFrame>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -64,6 +87,8 @@ pub struct Project {
     pub modified_at: String,
     pub sources: Vec<SourceAsset>,
     pub timeline: Vec<TimelineFrame>,
+    #[serde(default)]
+    pub clips: Vec<TimelineClip>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_frames: Option<std::collections::HashMap<String, Vec<TimelineFrame>>>,
 }
@@ -87,6 +112,8 @@ pub struct SavedTimelineFrame {
     pub duration_cs: u16,
     #[serde(default)]
     pub track_index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_id: Option<String>,
 }
 
 /// Project document written to `project.json` inside a `.gifforge` archive.
@@ -99,4 +126,6 @@ pub struct SavedProject {
     pub modified_at: String,
     pub sources: Vec<SourceAsset>,
     pub timeline: Vec<SavedTimelineFrame>,
+    #[serde(default)]
+    pub clips: Vec<TimelineClip>,
 }

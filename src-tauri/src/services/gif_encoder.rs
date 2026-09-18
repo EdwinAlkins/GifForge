@@ -1,9 +1,8 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use gif::{DisposalMethod, Encoder, Frame, Repeat};
 use image::imageops;
@@ -12,69 +11,69 @@ use imagequant::RGBA;
 use rayon::prelude::*;
 
 use crate::error::{GifForgeError, Result};
-use crate::models::{CropRect, ExportQuality, TimelineFrame};
+use crate::models::{CropRect, ExportQuality, ExportSegment, TimelineFrame};
 
-const READ_BATCH: usize = 64;
+/// En dessous de ce seuil alpha, un pixel est transparent dans le GIF.
+const ALPHA_THRESHOLD: u8 = 128;
 
-struct PreparedFrame {
+type GifWriter = Encoder<BufWriter<File>>;
+
+/// Rectangle du canevas, en pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Rect {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+/// Portion du canevas à encoder comme une frame GIF.
+struct Job {
     rgba: RgbaImage,
+    rect: Rect,
     duration_cs: u16,
+    dispose: DisposalMethod,
 }
 
-struct IndexedFrame {
-    width: u16,
-    height: u16,
-    pixels: Vec<u8>,
-    palette: Vec<u8>,
-    transparent: Option<u8>,
-    duration_cs: u16,
+/// Nombre de frames lues et quantifiées en parallèle. Borne la RAM à
+/// O(lot × largeur × hauteur) au lieu de O(frames × largeur × hauteur).
+fn batch_size() -> usize {
+    rayon::current_num_threads().clamp(2, 8)
 }
 
-/// Encode the timeline into a GIF, applying per-source crops.
-/// Progress runs 0 → `total * 2` (lecture puis quantification/écriture frame par frame).
+/// Encode les segments de la timeline en GIF en streaming, en appliquant les crops par
+/// source.
+///
+/// Chaque segment est composé sur le canevas (calques de la piste du bas vers celle du
+/// haut) puis comparé au précédent :
+/// - frame identique → sa durée est ajoutée à la frame précédente ;
+/// - sinon seul le rectangle modifié est encodé (disposition `Keep`) ;
+/// - si des pixels opaques doivent redevenir transparents, la frame précédente est
+///   réécrite en plein canevas avec disposition `Background` pour effacer l'écran.
+///
+/// Progression : 0 → `segments.len()`.
 pub fn encode_timeline<F>(
     out_path: &str,
-    frames: &[TimelineFrame],
-    crops: &std::collections::HashMap<String, Option<CropRect>>,
+    segments: &[ExportSegment],
+    crops: &HashMap<String, Option<CropRect>>,
     quality: &ExportQuality,
-    on_progress: F,
+    mut on_progress: F,
 ) -> Result<()>
 where
     F: FnMut(usize, usize) + Send,
 {
-    let total = frames.len();
+    let total = segments.len();
     if total == 0 {
         return Ok(());
     }
 
-    let progress_total = total * 2;
-    let progress_cb = Arc::new(Mutex::new(on_progress));
-    let report = |done: usize| {
-        if let Ok(mut cb) = progress_cb.lock() {
-            cb(done, progress_total);
-        }
+    let (screen_w, screen_h) = canvas_size(segments, crops)?;
+    let full = Rect {
+        x: 0,
+        y: 0,
+        w: screen_w as u32,
+        h: screen_h as u32,
     };
-
-    let mut prepared: Vec<PreparedFrame> = Vec::with_capacity(total);
-    let batch_count = total.div_ceil(READ_BATCH);
-    let read_done = AtomicUsize::new(0);
-
-    for batch_idx in 0..batch_count {
-        let start = batch_idx * READ_BATCH;
-        let end = (start + READ_BATCH).min(total);
-        let slice = &frames[start..end];
-
-        let batch: Result<Vec<PreparedFrame>> = slice
-            .par_iter()
-            .map(|tf| prepare_frame(tf, crops))
-            .collect();
-
-        prepared.extend(batch?);
-        let n = read_done.fetch_add(slice.len(), Ordering::Relaxed) + slice.len();
-        report(n);
-    }
-
-    let (screen_w, screen_h) = canvas_size(&prepared);
     let file = File::create(out_path)?;
     let mut encoder = Encoder::new(BufWriter::new(file), screen_w, screen_h, &[])
         .map_err(|e| GifForgeError::other(format!("encodeur GIF : {e}")))?;
@@ -82,31 +81,111 @@ where
         .set_repeat(Repeat::Infinite)
         .map_err(|e| GifForgeError::other(format!("encodeur GIF : {e}")))?;
 
-    match quality {
-        ExportQuality::Fast => {
-            for (i, pf) in prepared.iter().enumerate() {
-                write_rgba_frame(&mut encoder, pf)?;
-                report(total + i + 1);
+    // Canevas affiché après la dernière frame planifiée.
+    let mut prev: Option<RgbaImage> = None;
+    // Dernière frame encodée, retenue car la suivante peut encore allonger sa durée
+    // ou exiger qu'elle efface l'écran.
+    let mut pending: Option<Frame<'static>> = None;
+    let mut done = 0;
+
+    for chunk in segments.chunks(batch_size()) {
+        let canvases: Vec<RgbaImage> = chunk
+            .par_iter()
+            .map(|seg| render_canvas(seg, crops, full))
+            .collect::<Result<_>>()?;
+
+        let mut jobs: Vec<Job> = Vec::with_capacity(chunk.len());
+        for (seg, canvas) in chunk.iter().zip(canvases) {
+            let duration_cs = seg.duration_cs;
+            let Some(prev_canvas) = prev.as_ref() else {
+                jobs.push(Job {
+                    rgba: canvas.clone(),
+                    rect: full,
+                    duration_cs,
+                    dispose: DisposalMethod::Keep,
+                });
+                prev = Some(canvas);
+                continue;
+            };
+
+            let rect = match diff_rect(prev_canvas, &canvas) {
+                Some(rect) => rect,
+                None => {
+                    let last_delay = match jobs.last_mut() {
+                        Some(job) => &mut job.duration_cs,
+                        None => &mut pending.as_mut().expect("frame précédente").delay,
+                    };
+                    if let Some(sum) = last_delay.checked_add(duration_cs) {
+                        *last_delay = sum;
+                        continue;
+                    }
+                    // Durée cumulée hors du champ GIF 16 bits : frame 1×1 inchangée.
+                    Rect { x: 0, y: 0, w: 1, h: 1 }
+                }
+            };
+
+            if needs_clear(prev_canvas, &canvas, rect) {
+                match jobs.last_mut() {
+                    Some(job) => {
+                        job.rgba = prev_canvas.clone();
+                        job.rect = full;
+                        job.dispose = DisposalMethod::Background;
+                    }
+                    None => {
+                        let last = pending.take().expect("frame précédente");
+                        pending = Some(encode_job(
+                            Job {
+                                rgba: prev_canvas.clone(),
+                                rect: full,
+                                duration_cs: last.delay,
+                                dispose: DisposalMethod::Background,
+                            },
+                            quality,
+                        )?);
+                    }
+                }
+                jobs.push(Job {
+                    rgba: canvas.clone(),
+                    rect: full,
+                    duration_cs,
+                    dispose: DisposalMethod::Keep,
+                });
+            } else {
+                jobs.push(Job {
+                    rgba: imageops::crop_imm(&canvas, rect.x, rect.y, rect.w, rect.h).to_image(),
+                    rect,
+                    duration_cs,
+                    dispose: DisposalMethod::Keep,
+                });
+            }
+            prev = Some(canvas);
+        }
+
+        let encoded: Vec<Frame<'static>> = jobs
+            .into_par_iter()
+            .map(|job| encode_job(job, quality))
+            .collect::<Result<_>>()?;
+        for frame in encoded {
+            if let Some(ready) = pending.replace(frame) {
+                write_frame(&mut encoder, &ready)?;
             }
         }
-        ExportQuality::Balanced | ExportQuality::Light => {
-            // Quantification + écriture frame par frame pour une progression fluide (50 % → 100 %).
-            for (i, pf) in prepared.iter().enumerate() {
-                let indexed = quantize_single_frame(pf, quality)?;
-                write_indexed_frame(&mut encoder, &indexed)?;
-                report(total + i + 1);
-            }
-        }
+
+        done += chunk.len();
+        on_progress(done, total);
     }
 
-    report(progress_total);
+    if let Some(last) = pending {
+        write_frame(&mut encoder, &last)?;
+    }
+    encoder
+        .into_inner()
+        .and_then(|mut w| w.flush())
+        .map_err(|e| GifForgeError::other(format!("finalisation GIF : {e}")))?;
     Ok(())
 }
 
-fn prepare_frame(
-    tf: &TimelineFrame,
-    crops: &std::collections::HashMap<String, Option<CropRect>>,
-) -> Result<PreparedFrame> {
+fn check_cache_path(tf: &TimelineFrame) -> Result<()> {
     if tf.frame_path.is_empty() {
         return Err(GifForgeError::other(format!(
             "cache PNG introuvable pour la frame {} (source {}, index {})",
@@ -119,80 +198,188 @@ fn prepare_frame(
             tf.frame_path
         )));
     }
+    Ok(())
+}
 
+fn source_crop<'a>(
+    tf: &TimelineFrame,
+    crops: &'a HashMap<String, Option<CropRect>>,
+) -> Option<&'a CropRect> {
+    crops.get(&tf.source_id).and_then(|c| c.as_ref())
+}
+
+/// Taille du canevas = max des tailles de calque après crop, lue dans les en-têtes PNG
+/// sans décoder les pixels.
+fn canvas_size(
+    segments: &[ExportSegment],
+    crops: &HashMap<String, Option<CropRect>>,
+) -> Result<(u16, u16)> {
+    // Une même frame apparaît dans plusieurs segments quand une autre piste la découpe.
+    let mut unique: Vec<&TimelineFrame> = segments.iter().flat_map(|s| &s.layers).collect();
+    unique.sort_by(|a, b| (&a.frame_path, &a.source_id).cmp(&(&b.frame_path, &b.source_id)));
+    unique.dedup_by(|a, b| a.frame_path == b.frame_path && a.source_id == b.source_id);
+
+    let (w, h) = unique
+        .par_iter()
+        .map(|tf| -> Result<(u32, u32)> {
+            check_cache_path(tf)?;
+            let (w, h) = image::image_dimensions(&tf.frame_path)?;
+            Ok(match source_crop(tf, crops) {
+                Some(crop) => {
+                    let r = crop_rect(w, h, crop);
+                    (r.w, r.h)
+                }
+                None => (w, h),
+            })
+        })
+        .try_reduce(|| (0, 0), |(aw, ah), (bw, bh)| Ok((aw.max(bw), ah.max(bh))))?;
+    Ok((w.max(1).min(u16::MAX as u32) as u16, h.max(1).min(u16::MAX as u32) as u16))
+}
+
+/// Compose les calques du segment en haut à gauche du canevas, piste du bas d'abord.
+/// L'alpha est binarisé (le GIF n'a que opaque / transparent) : un pixel opaque d'un
+/// calque recouvre ceux des calques inférieurs.
+fn render_canvas(
+    segment: &ExportSegment,
+    crops: &HashMap<String, Option<CropRect>>,
+    canvas: Rect,
+) -> Result<RgbaImage> {
+    let mut out: Option<RgbaImage> = None;
+    for tf in &segment.layers {
+        let layer = load_layer(tf, crops)?;
+        match out.as_mut() {
+            None if layer.dimensions() == (canvas.w, canvas.h) => out = Some(layer),
+            None => {
+                let mut base = RgbaImage::new(canvas.w, canvas.h);
+                imageops::replace(&mut base, &layer, 0, 0);
+                out = Some(base);
+            }
+            Some(base) => {
+                for (x, y, px) in layer.enumerate_pixels() {
+                    if px[3] != 0 && x < canvas.w && y < canvas.h {
+                        base.put_pixel(x, y, *px);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out.unwrap_or_else(|| RgbaImage::new(canvas.w, canvas.h)))
+}
+
+/// Charge une frame, applique le crop de sa source et binarise l'alpha.
+fn load_layer(tf: &TimelineFrame, crops: &HashMap<String, Option<CropRect>>) -> Result<RgbaImage> {
+    check_cache_path(tf)?;
     let mut image = image::open(&tf.frame_path)?.to_rgba8();
-    if let Some(crop) = crops.get(&tf.source_id).and_then(|c| c.as_ref()) {
+    if let Some(crop) = source_crop(tf, crops) {
         image = apply_crop(&image, crop);
     }
-    Ok(PreparedFrame {
-        rgba: image,
-        duration_cs: tf.duration_cs,
+    for px in image.pixels_mut() {
+        if px[3] < ALPHA_THRESHOLD {
+            px.0 = [0, 0, 0, 0];
+        } else {
+            px[3] = 255;
+        }
+    }
+    Ok(image)
+}
+
+/// Plus petit rectangle contenant tous les pixels différents, `None` si identiques.
+fn diff_rect(prev: &RgbaImage, cur: &RgbaImage) -> Option<Rect> {
+    let w = cur.width() as usize;
+    let stride = w * 4;
+    let mut rows = None::<(usize, usize)>;
+    let (mut x0, mut x1) = (usize::MAX, 0);
+
+    let row_pairs = prev.as_raw().chunks_exact(stride).zip(cur.as_raw().chunks_exact(stride));
+    for (y, (a, b)) in row_pairs.enumerate() {
+        if a == b {
+            continue;
+        }
+        let pixels = || a.chunks_exact(4).zip(b.chunks_exact(4));
+        let first = pixels().position(|(p, q)| p != q).unwrap_or(0);
+        let last = w - 1 - pixels().rev().position(|(p, q)| p != q).unwrap_or(0);
+        x0 = x0.min(first);
+        x1 = x1.max(last);
+        rows = Some((rows.map_or(y, |(y0, _)| y0), y));
+    }
+
+    rows.map(|(y0, y1)| Rect {
+        x: x0 as u32,
+        y: y0 as u32,
+        w: (x1 - x0 + 1) as u32,
+        h: (y1 - y0 + 1) as u32,
     })
 }
 
-fn canvas_size(prepared: &[PreparedFrame]) -> (u16, u16) {
-    let (w, h) = prepared
-        .iter()
-        .map(|pf| pf.rgba.dimensions())
-        .fold((0u32, 0u32), |(mw, mh), (dw, dh)| (mw.max(dw), mh.max(dh)));
-    (w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16)
+/// Vrai si un pixel opaque doit devenir transparent dans `rect` : impossible avec `Keep`,
+/// car dessiner l'index transparent laisse le pixel précédent visible.
+fn needs_clear(prev: &RgbaImage, cur: &RgbaImage, rect: Rect) -> bool {
+    (rect.y..rect.y + rect.h).any(|y| {
+        (rect.x..rect.x + rect.w)
+            .any(|x| cur.get_pixel(x, y)[3] == 0 && prev.get_pixel(x, y)[3] != 0)
+    })
 }
 
-fn write_rgba_frame(encoder: &mut Encoder<BufWriter<File>>, pf: &PreparedFrame) -> Result<()> {
-    let (w, h) = pf.rgba.dimensions();
-    let rgba = pf.rgba.clone();
-    let mut raw = rgba.into_raw();
-    let mut frame = Frame::from_rgba_speed(w as u16, h as u16, &mut raw, 5);
-    frame.delay = pf.duration_cs;
-    frame.dispose = DisposalMethod::Background;
-    encoder
-        .write_frame(&frame)
-        .map_err(|e| GifForgeError::other(format!("écriture frame : {e}")))?;
-    Ok(())
-}
-
-fn write_indexed_frame(encoder: &mut Encoder<BufWriter<File>>, frame: &IndexedFrame) -> Result<()> {
-    let gif_frame = Frame {
-        width: frame.width,
-        height: frame.height,
-        buffer: Cow::Owned(frame.pixels.clone()),
-        palette: Some(frame.palette.clone()),
-        transparent: frame.transparent,
-        delay: frame.duration_cs,
-        dispose: DisposalMethod::Background,
-        ..Default::default()
+fn encode_job(job: Job, quality: &ExportQuality) -> Result<Frame<'static>> {
+    let (w, h) = job.rgba.dimensions();
+    let mut frame = match quality {
+        ExportQuality::Fast => {
+            let mut raw = job.rgba.into_raw();
+            Frame::from_rgba_speed(w as u16, h as u16, &mut raw, 5)
+        }
+        ExportQuality::Balanced | ExportQuality::Light => quantize(job.rgba, quality)?,
     };
-    encoder
-        .write_frame(&gif_frame)
-        .map_err(|e| GifForgeError::other(format!("écriture frame : {e}")))?;
-    Ok(())
+    frame.left = job.rect.x as u16;
+    frame.top = job.rect.y as u16;
+    frame.delay = job.duration_cs;
+    frame.dispose = job.dispose;
+    Ok(frame)
 }
 
-fn quantize_single_frame(pf: &PreparedFrame, quality: &ExportQuality) -> Result<IndexedFrame> {
-    let (w, h) = pf.rgba.dimensions();
+fn quantize(rgba: RgbaImage, quality: &ExportQuality) -> Result<Frame<'static>> {
+    let (w, h) = rgba.dimensions();
     let mut liq = imagequant::new();
     apply_quality(&mut liq, quality)?;
     liq.set_max_colors(256)?;
 
-    let pixels: Vec<RGBA> = pf
-        .rgba
+    let pixels: Vec<RGBA> = rgba
         .pixels()
         .map(|p| RGBA::new(p[0], p[1], p[2], p[3]))
         .collect();
+    drop(rgba);
     let mut img = liq.new_image(pixels, w as usize, h as usize, 0.0)?;
     let mut quantization = liq.quantize(&mut img)?;
     let (palette, indexed) = quantization.remapped(&mut img)?;
-    Ok(indexed_frame_from_quant(w, h, &palette, indexed, pf.duration_cs))
+
+    let mut gif_palette: Vec<u8> = Vec::with_capacity(palette.len() * 3);
+    let mut transparent = None;
+    for (i, c) in palette.iter().enumerate() {
+        gif_palette.extend_from_slice(&[c.r, c.g, c.b]);
+        if c.a < ALPHA_THRESHOLD {
+            transparent = Some(i as u8);
+        }
+    }
+    Ok(Frame {
+        width: w as u16,
+        height: h as u16,
+        buffer: Cow::Owned(indexed),
+        palette: Some(gif_palette),
+        transparent,
+        ..Default::default()
+    })
 }
 
+/// Réglages imagequant par preset. Le minimum de qualité reste à 0 : au-dessus,
+/// imagequant renvoie `QualityTooLow` sur les images trop riches en couleurs au lieu de
+/// dégrader, ce qui ferait échouer l'export.
 fn apply_quality(liq: &mut imagequant::Attributes, quality: &ExportQuality) -> Result<()> {
     match quality {
         ExportQuality::Balanced => {
-            liq.set_quality(70, 90)?;
+            liq.set_quality(0, 90)?;
             liq.set_speed(6)?;
         }
         ExportQuality::Light => {
-            liq.set_quality(55, 85)?;
+            liq.set_quality(0, 85)?;
             liq.set_speed(8)?;
         }
         ExportQuality::Fast => {}
@@ -200,38 +387,26 @@ fn apply_quality(liq: &mut imagequant::Attributes, quality: &ExportQuality) -> R
     Ok(())
 }
 
-fn indexed_frame_from_quant(
-    w: u32,
-    h: u32,
-    palette: &[imagequant::RGBA],
-    indexed: Vec<u8>,
-    duration_cs: u16,
-) -> IndexedFrame {
-    let mut gif_palette: Vec<u8> = Vec::with_capacity(palette.len() * 3);
-    let mut transparent = None;
-    for (i, c) in palette.iter().enumerate() {
-        gif_palette.push(c.r);
-        gif_palette.push(c.g);
-        gif_palette.push(c.b);
-        if c.a < 128 {
-            transparent = Some(i as u8);
-        }
-    }
-    IndexedFrame {
-        width: w as u16,
-        height: h as u16,
-        pixels: indexed,
-        palette: gif_palette,
-        transparent,
-        duration_cs,
+fn write_frame(encoder: &mut GifWriter, frame: &Frame<'_>) -> Result<()> {
+    encoder
+        .write_frame(frame)
+        .map_err(|e| GifForgeError::other(format!("écriture frame : {e}")))
+}
+
+/// Rectangle de crop borné à l'image (au moins 1×1).
+fn crop_rect(w: u32, h: u32, crop: &CropRect) -> Rect {
+    let x = crop.x.min(w.saturating_sub(1));
+    let y = crop.y.min(h.saturating_sub(1));
+    Rect {
+        x,
+        y,
+        w: crop.width.min(w - x).max(1),
+        h: crop.height.min(h - y).max(1),
     }
 }
 
 pub fn apply_crop(img: &RgbaImage, crop: &CropRect) -> RgbaImage {
     let (w, h) = img.dimensions();
-    let x = crop.x.min(w.saturating_sub(1));
-    let y = crop.y.min(h.saturating_sub(1));
-    let cw = crop.width.min(w - x).max(1);
-    let ch = crop.height.min(h - y).max(1);
-    imageops::crop_imm(img, x, y, cw, ch).to_image()
+    let r = crop_rect(w, h, crop);
+    imageops::crop_imm(img, r.x, r.y, r.w, r.h).to_image()
 }

@@ -1,41 +1,31 @@
 import { useEffect } from "preact/hooks";
-import { isPlaying, currentFrameIndex } from "../stores/playbackStore";
-import { timeline } from "../stores/projectStore";
+import { isPlaying, currentTimeMs } from "../stores/playbackStore";
+import { renderPlan } from "../stores/projectStore";
+import { MS_PER_CS } from "../lib/timelineModel";
 
 /**
- * Drift-corrected playback using a single rAF loop (no per-frame effect restart).
+ * Time-based playback: a single rAF loop advances `currentTimeMs` by the real elapsed
+ * time; the displayed frame is derived from it, so timing matches the exported GIF.
  */
 export function usePlayback(): void {
   const playing = isPlaying.value;
-  const frames = timeline.value;
 
   useEffect(() => {
-    if (!playing || frames.length === 0) return;
+    if (!playing) return;
 
     let rafId: number;
     let lastTs: number | null = null;
-    let debtMs = 0;
-    let localIndex = currentFrameIndex.value % frames.length;
-    const frameCount = frames.length;
-
-    const durationMs = (i: number) =>
-      Math.max(20, (frames[i]?.durationCs ?? 10) * 10);
 
     const tick = (timestamp: number) => {
-      if (lastTs === null) lastTs = timestamp;
-      debtMs += timestamp - lastTs;
-      lastTs = timestamp;
-
-      while (frameCount > 0 && debtMs >= durationMs(localIndex)) {
-        debtMs -= durationMs(localIndex);
-        localIndex = (localIndex + 1) % frameCount;
-        currentFrameIndex.value = localIndex;
+      const total = renderPlan.peek().totalCs * MS_PER_CS;
+      if (lastTs !== null && total > 0) {
+        currentTimeMs.value = (currentTimeMs.peek() + timestamp - lastTs) % total;
       }
-
+      lastTs = timestamp;
       rafId = requestAnimationFrame(tick);
     };
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [playing, frames]);
+  }, [playing]);
 }

@@ -1,95 +1,115 @@
-import { useRef, useEffect, useState } from "preact/hooks";
+import { useRef, useEffect, useLayoutEffect, useState } from "preact/hooks";
 import {
-  timeline,
+  timelineModel,
+  sources,
   selectedFrameIds,
-  selectedSourceId,
   selectFrameRange,
   clearFrameSelection,
-  moveSelectedFrames,
   toggleFrameSelection,
+  selectClip,
+  clipsWithSelection,
+  planClipMove,
+  moveClips,
+  frameDropTarget,
+  moveFrames,
 } from "../../stores/projectStore";
-import { currentFrameIndex } from "../../stores/playbackStore";
+import { currentTimeMs, seekToFrame } from "../../stores/playbackStore";
 import {
-  timelineZoom,
+  pxPerSec,
   effectiveTrackCount,
   marqueeRect,
   dragState,
+  clampPxPerSec,
 } from "../../stores/timelineViewStore";
 import {
-  contentHeight,
-  normalizeRect,
-  framesInMarquee,
-  dropTargetAt,
-  TRACK_LABEL_WIDTH,
-  TRACK_HEIGHT,
+  clipsInRange,
+  frameRangeInClip,
+  MS_PER_CS,
+  type ClipModel,
+} from "../../lib/timelineModel";
+import {
+  CLIP_PADDING_Y,
   RULER_HEIGHT,
-  clipWidth,
-  CLIP_GAP,
-  type ClipLayout,
-} from "../../lib/timelineLayout";
-import { memoClipLayouts, memoContentWidth } from "../../lib/timelineLayoutMemo";
-import { visibleLayouts, visibleRulerTicks } from "../../lib/timelineVirtual";
+  SNAP_PX,
+  TRACK_HEIGHT,
+  TRACK_LABEL_WIDTH,
+  pxPerCs,
+  timeToX,
+  trackAtY,
+  trackTop,
+  xToTime,
+} from "../../lib/timelineGeometry";
 import { perfDev } from "../../lib/perfDev";
-import { FrameClip } from "./FrameClip";
+import { ClipView } from "./ClipView";
+import { TimeRuler } from "./TimeRuler";
+import { Playhead } from "./Playhead";
 import { TimelineToolbar } from "./TimelineToolbar";
 import { FrameDurationEditor } from "./FrameDurationEditor";
-import { PlayheadIndicator } from "./PlayheadIndicator";
 
-/** Multi-track NLE timeline with zoom, lasso selection, virtualized clips, and group drag. */
+/** Pointer gesture started on the timeline, before it becomes a drag (5 px threshold). */
+type Pending =
+  | { kind: "marquee"; x: number; y: number }
+  | { kind: "clips"; x: number; y: number; primary: ClipModel }
+  | { kind: "frames"; x: number; y: number };
+
+/**
+ * Time-based multi-track timeline: clips sit at `startCs` on a shared time axis, higher
+ * tracks drawn on top. Everything per render / pointer move is a binary search over the
+ * timeline model, so cost depends on what is visible, not on the timeline length.
+ */
 export function TimelinePanel() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const marqueeStart = useRef<{ x: number; y: number } | null>(null);
-  const isMarquee = useRef(false);
-  const clipDragStart = useRef<{
-    startX: number;
-    startY: number;
-    layout: ClipLayout;
-    ids: string[];
-  } | null>(null);
+  const pending = useRef<Pending | null>(null);
+  const dragging = useRef(false);
+  /** Time kept under the same screen x across a zoom change. */
+  const zoomAnchor = useRef<{ tCs: number; px: number } | null>(null);
 
   const [scrollLeft, setScrollLeft] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(800);
 
-  const frames = timeline.value;
-  const zoom = timelineZoom.value;
-  const tracks = effectiveTrackCount.value;
   const t0 = performance.now();
-  const layouts = memoClipLayouts(frames, tracks, zoom);
-  perfDev.recordLayoutMs(performance.now() - t0);
-  perfDev.bumpTimelineRender();
-
-  const cw = memoContentWidth(frames, tracks, zoom);
-  const ch = contentHeight(tracks);
+  const model = timelineModel.value;
+  const pps = pxPerSec.value;
+  const tracks = effectiveTrackCount.value;
   const marquee = marqueeRect.value;
   const drag = dragState.value;
-  const w = clipWidth(zoom);
-  const slotWidth = w + CLIP_GAP;
-  const bufferPx = slotWidth * 10;
+  const selectedClips = clipsWithSelection();
+  const filenames = new Map(sources.value.map((s) => [s.id, s.filename]));
 
-  const visible =
-    frames.length > 0
-      ? visibleLayouts(layouts, scrollLeft, viewportWidth, bufferPx)
-      : [];
+  const contentWidth = Math.max(timeToX(model.endCs, pps) + viewportWidth / 2, viewportWidth);
+  const contentHeight = RULER_HEIGHT + tracks * TRACK_HEIGHT;
+  const bufferPx = 200;
+  const visFrom = xToTime(scrollLeft - bufferPx, pps);
+  const visTo = xToTime(scrollLeft + viewportWidth + bufferPx, pps);
+  const draggedClips = drag?.kind === "clips" ? drag.clipIds : null;
 
-  const playheadIndex = currentFrameIndex.value;
-  const showPlayhead = selectedSourceId.value === null && frames.length > 0;
-  const playheadLayout =
-    showPlayhead ? layouts.find((l) => l.globalIndex === playheadIndex) ?? null : null;
-
-  const totalRulerSlots = Math.ceil((cw - TRACK_LABEL_WIDTH) / slotWidth);
-  const rulerTicks = visibleRulerTicks(
-    scrollLeft,
-    viewportWidth,
-    TRACK_LABEL_WIDTH,
-    slotWidth,
-    totalRulerSlots,
-  );
+  const clipViews = [];
+  for (let t = 0; t < tracks; t++) {
+    for (const cm of clipsInRange(model.tracks[t], visFrom, visTo)) {
+      clipViews.push(
+        <ClipView
+          key={cm.clip.id}
+          cm={cm}
+          top={trackTop(t, tracks)}
+          pxPerSec={pps}
+          visFromCs={visFrom}
+          visToCs={visTo}
+          label={filenames.get(cm.clip.frames[0]?.sourceId) ?? "clip"}
+          hasSelection={selectedClips.has(cm.clip.id)}
+          dimmed={!!draggedClips?.has(cm.clip.id)}
+          onPointerDownClip={onClipPointerDown}
+          onPointerDownFrame={onFramePointerDown}
+        />,
+      );
+    }
+  }
+  perfDev.recordLayoutMs(performance.now() - t0);
+  perfDev.bumpTimelineRender();
 
   useEffect(() => {
     const vp = viewportRef.current;
     if (!vp) return;
-
     const onScroll = () => setScrollLeft(vp.scrollLeft);
     const ro = new ResizeObserver(() => setViewportWidth(vp.clientWidth));
     onScroll();
@@ -101,89 +121,86 @@ export function TimelinePanel() {
     };
   }, []);
 
+  // Keep the anchored time (pointer for Ctrl+wheel, view centre otherwise) in place.
+  const lastPps = useRef(pps);
+  useLayoutEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp || lastPps.current === pps) return;
+    const anchor = zoomAnchor.current ?? {
+      tCs: xToTime(vp.scrollLeft + vp.clientWidth / 2, lastPps.current),
+      px: vp.clientWidth / 2,
+    };
+    vp.scrollLeft = Math.max(0, timeToX(anchor.tCs, pps) - anchor.px);
+    zoomAnchor.current = null;
+    lastPps.current = pps;
+  }, [pps]);
+
+  /** Content coordinates of a pointer event. */
+  function contentPoint(e: PointerEvent): { x: number; y: number } {
+    const rect = contentRef.current!.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
   useEffect(() => {
     function onPointerMove(e: PointerEvent) {
-      if (isMarquee.current && marqueeStart.current && contentRef.current) {
-        const rect = contentRef.current.getBoundingClientRect();
-        const sl = viewportRef.current?.scrollLeft ?? 0;
-        const st = viewportRef.current?.scrollTop ?? 0;
-        const x1 = e.clientX - rect.left + sl;
-        const y1 = e.clientY - rect.top + st;
-        marqueeRect.value = normalizeRect(
-          marqueeStart.current.x,
-          marqueeStart.current.y,
-          x1,
-          y1,
-        );
-        return;
-      }
+      const p = pending.current;
+      if (!p || !contentRef.current) return;
+      const { x, y } = contentPoint(e);
+      const pps = pxPerSec.peek();
 
-      const d = dragState.value;
-      if (d && contentRef.current) {
-        const rect = contentRef.current.getBoundingClientRect();
-        const sl = viewportRef.current?.scrollLeft ?? 0;
-        const st = viewportRef.current?.scrollTop ?? 0;
-        const cx = e.clientX - rect.left + sl;
-        const cy = e.clientY - rect.top + st;
-        const target = dropTargetAt(
-          timeline.value,
-          effectiveTrackCount.value,
-          timelineZoom.value,
-          cx,
-          cy,
-        );
-        dragState.value = {
-          ...d,
-          dropTrack: target.trackIndex,
-          dropBeforeGlobalIndex: target.insertBeforeGlobalIndex,
+      if (p.kind === "marquee") {
+        marqueeRect.value = {
+          x: Math.min(p.x, x),
+          y: Math.min(p.y, y),
+          width: Math.abs(x - p.x),
+          height: Math.abs(y - p.y),
         };
         return;
       }
+      if (!dragging.current) {
+        if (Math.hypot(x - p.x, y - p.y) < 5) return;
+        dragging.current = true;
+      }
 
-      const cds = clipDragStart.current;
-      if (cds && !dragState.value) {
-        if (Math.hypot(e.clientX - cds.startX, e.clientY - cds.startY) >= 5) {
-          dragState.value = {
-            frameIds: cds.ids,
-            dropTrack: cds.layout.trackIndex,
-            dropBeforeGlobalIndex: cds.layout.globalIndex,
-          };
-        }
+      const trackCount = effectiveTrackCount.peek();
+      if (p.kind === "clips") {
+        const clipIds = clipsWithSelection();
+        const deltaCs = snapDelta(p.primary, Math.round((x - p.x) / pxPerCs(pps)), clipIds, pps);
+        const deltaTrack = trackAtY(y, trackCount) - trackAtY(p.y, trackCount);
+        dragState.value = {
+          kind: "clips",
+          clipIds,
+          deltaCs,
+          deltaTrack,
+          valid: planClipMove(clipIds, deltaCs, deltaTrack) !== null,
+        };
+      } else {
+        dragState.value = {
+          kind: "frames",
+          frameIds: selectedFrameIds.peek(),
+          target: frameDropTarget(trackAtY(y, trackCount), Math.max(0, xToTime(x, pps))),
+        };
       }
     }
 
     function onPointerUp(e: PointerEvent) {
-      if (isMarquee.current && marqueeStart.current) {
+      const p = pending.current;
+      pending.current = null;
+      const wasDragging = dragging.current;
+      dragging.current = false;
+
+      if (p?.kind === "marquee") {
         const m = marqueeRect.value;
-        const currentLayouts = memoClipLayouts(
-          timeline.value,
-          effectiveTrackCount.value,
-          timelineZoom.value,
-        );
-        if (m && (m.width > 4 || m.height > 4)) {
-          selectFrameRange(framesInMarquee(currentLayouts, m), e.shiftKey);
-        } else if (!e.shiftKey) {
-          clearFrameSelection();
-        }
-        isMarquee.current = false;
-        marqueeStart.current = null;
         marqueeRect.value = null;
+        if (m && (m.width > 4 || m.height > 4)) selectFrameRange(framesInRect(m), e.shiftKey);
+        return;
       }
 
       const d = dragState.value;
-      if (d) {
-        if (
-          d.dropTrack !== null &&
-          d.dropBeforeGlobalIndex !== null &&
-          d.frameIds.length > 0
-        ) {
-          selectedFrameIds.value = new Set(d.frameIds);
-          moveSelectedFrames(d.dropTrack, d.dropBeforeGlobalIndex);
-        }
-        dragState.value = null;
-      }
-
-      clipDragStart.current = null;
+      dragState.value = null;
+      if (!wasDragging || !d) return;
+      if (d.kind === "clips" && d.valid) moveClips(d.clipIds, d.deltaCs, d.deltaTrack);
+      if (d.kind === "frames" && d.target) moveFrames(d.frameIds, d.target);
     }
 
     window.addEventListener("pointermove", onPointerMove);
@@ -195,155 +212,118 @@ export function TimelinePanel() {
   }, []);
 
   function onViewportPointerDown(e: PointerEvent) {
-    if (e.button !== 0) return;
-    const target = e.target as HTMLElement;
-    if (target.closest("[data-frame-id]")) return;
-
-    const content = contentRef.current;
-    if (!content) return;
-
-    const rect = content.getBoundingClientRect();
-    const sl = viewportRef.current?.scrollLeft ?? 0;
-    const st = viewportRef.current?.scrollTop ?? 0;
-    marqueeStart.current = {
-      x: e.clientX - rect.left + sl,
-      y: e.clientY - rect.top + st,
-    };
-    isMarquee.current = true;
-    marqueeRect.value = {
-      x: marqueeStart.current.x,
-      y: marqueeStart.current.y,
-      width: 0,
-      height: 0,
-    };
+    if (e.button !== 0 || !contentRef.current) return;
+    pending.current = { kind: "marquee", ...contentPoint(e) };
     if (!e.shiftKey) clearFrameSelection();
   }
 
-  function onClipPointerDown(e: PointerEvent, layout: ClipLayout) {
+  function onClipPointerDown(e: PointerEvent, cm: ClipModel) {
     if (e.button !== 0) return;
     e.stopPropagation();
+    if (e.shiftKey) selectClip(cm.clip.id, true);
+    else if (!clipsWithSelection().has(cm.clip.id)) selectClip(cm.clip.id, false);
+    pending.current = { kind: "clips", ...contentPoint(e), primary: cm };
+  }
 
-    if (!selectedFrameIds.value.has(layout.frameId) && !e.shiftKey) {
-      selectedFrameIds.value = new Set([layout.frameId]);
-    } else if (e.shiftKey) {
-      toggleFrameSelection(layout.frameId, true);
-    }
-
-    currentFrameIndex.value = layout.globalIndex;
-
-    clipDragStart.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      layout,
-      ids: [...selectedFrameIds.value],
-    };
+  function onFramePointerDown(e: PointerEvent, cm: ClipModel, index: number) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const id = cm.clip.frames[index].id;
+    if (e.shiftKey) toggleFrameSelection(id, true);
+    else if (!selectedFrameIds.value.has(id)) selectFrameRange([id], false);
+    seekToFrame(id);
+    pending.current = { kind: "frames", ...contentPoint(e) };
   }
 
   function onWheel(e: WheelEvent) {
     if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
-    const delta = e.deltaY > 0 ? -0.1 : 0.1;
-    const next = Math.max(0.35, Math.min(2.5, timelineZoom.value + delta));
-    timelineZoom.value = +next.toFixed(2);
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const px = e.clientX - vp.getBoundingClientRect().left;
+    zoomAnchor.current = { tCs: xToTime(vp.scrollLeft + px, pxPerSec.value), px };
+    pxPerSec.value = clampPxPerSec(pxPerSec.value * (e.deltaY < 0 ? 1.2 : 1 / 1.2));
   }
 
   return (
     <div class="flex h-full flex-col">
-      <TimelineToolbar />
+      <TimelineToolbar viewportWidth={viewportWidth - TRACK_LABEL_WIDTH} />
 
       <div
         ref={viewportRef}
-        class="relative min-h-0 flex-1 overflow-auto bg-[#141414]"
+        class="relative min-h-0 flex-1 select-none overflow-auto bg-[#141414]"
         onPointerDown={onViewportPointerDown}
         onWheel={onWheel}
       >
-        {frames.length === 0 ? (
-          <p class="p-4 text-xs text-neutral-500">
-            Importez un GIF — dessinez un lasso pour sélectionner plusieurs frames.
-          </p>
-        ) : (
-          <div
-            ref={contentRef}
-            class="relative"
-            style={{ width: `${cw}px`, height: `${ch}px`, minWidth: "100%" }}
-          >
+        <div
+          ref={contentRef}
+          class="relative"
+          style={{ width: `${contentWidth}px`, height: `${contentHeight}px`, minWidth: "100%" }}
+        >
+          <TimeRuler
+            contentRef={contentRef}
+            pxPerSec={pps}
+            scrollLeft={scrollLeft}
+            viewportWidth={viewportWidth}
+          />
+
+          {Array.from({ length: tracks }, (_, t) => (
             <div
-              class="sticky top-0 z-20 border-b border-edge bg-panel/95 text-[9px] text-neutral-500"
-              style={{ height: `${RULER_HEIGHT}px`, paddingLeft: `${TRACK_LABEL_WIDTH}px` }}
+              key={t}
+              class="absolute left-0 w-full border-b border-edge/50"
+              style={{
+                top: `${trackTop(t, tracks)}px`,
+                height: `${TRACK_HEIGHT}px`,
+                background: t % 2 === 0 ? "rgba(255,255,255,0.02)" : "transparent",
+              }}
+            />
+          ))}
+
+          {model.frameCount === 0 && (
+            <p class="absolute p-4 text-xs text-neutral-500" style={{ left: `${TRACK_LABEL_WIDTH}px`, top: `${RULER_HEIGHT}px` }}>
+              Importez un GIF — il devient un clip sur V1. Les pistes supérieures se superposent.
+            </p>
+          )}
+
+          {clipViews}
+
+          {drag && <DragFeedback />}
+
+          <Playhead
+            contentRef={contentRef}
+            viewportRef={viewportRef}
+            pxPerSec={pps}
+            height={contentHeight}
+          />
+
+          {marquee && marquee.width + marquee.height > 0 && (
+            <div
+              class="pointer-events-none absolute z-30 border border-accent bg-accent/15"
+              style={{
+                left: `${marquee.x}px`,
+                top: `${marquee.y}px`,
+                width: `${marquee.width}px`,
+                height: `${marquee.height}px`,
+              }}
+            />
+          )}
+
+          {/* Track labels stay pinned to the left edge while scrolling. */}
+          {Array.from({ length: tracks }, (_, t) => (
+            <div
+              key={`label-${t}`}
+              class="absolute z-20 flex items-center justify-center border-r border-edge bg-panel text-[10px] font-medium text-neutral-500"
+              style={{
+                left: `${scrollLeft}px`,
+                top: `${trackTop(t, tracks)}px`,
+                width: `${TRACK_LABEL_WIDTH}px`,
+                height: `${TRACK_HEIGHT}px`,
+              }}
             >
-              <div class="relative h-full">
-                {rulerTicks.map((i) => (
-                  <span
-                    key={i}
-                    class="absolute top-1 tabular-nums"
-                    style={{ left: `${i * slotWidth}px` }}
-                  >
-                    {i + 1}
-                  </span>
-                ))}
-              </div>
+              V{t + 1}
             </div>
-
-            {Array.from({ length: tracks }).map((_, t) => (
-              <div
-                key={t}
-                class="absolute border-b border-edge/50"
-                style={{
-                  top: `${RULER_HEIGHT + t * TRACK_HEIGHT}px`,
-                  left: 0,
-                  width: "100%",
-                  height: `${TRACK_HEIGHT}px`,
-                  background: t % 2 === 0 ? "rgba(255,255,255,0.02)" : "transparent",
-                }}
-              >
-                <div
-                  class="absolute left-0 top-0 flex h-full items-center justify-center border-r border-edge bg-panel/80 text-[10px] font-medium text-neutral-500"
-                  style={{ width: `${TRACK_LABEL_WIDTH}px` }}
-                >
-                  V{t + 1}
-                </div>
-              </div>
-            ))}
-
-            {drag && drag.dropTrack !== null && drag.dropBeforeGlobalIndex !== null && (
-              <DropIndicator
-                frames={frames}
-                zoom={zoom}
-                trackIndex={drag.dropTrack}
-                beforeGlobalIndex={drag.dropBeforeGlobalIndex}
-              />
-            )}
-
-            <PlayheadIndicator layout={playheadLayout} />
-
-            {visible.map((layout) => {
-              const frame = frames[layout.globalIndex];
-              if (!frame) return null;
-              return (
-                <FrameClip
-                  key={frame.id}
-                  layout={layout}
-                  frame={frame}
-                  zoom={zoom}
-                  isPlayhead={showPlayhead && layout.globalIndex === playheadIndex}
-                  onPointerDownClip={onClipPointerDown}
-                />
-              );
-            })}
-
-            {marquee && marquee.width + marquee.height > 0 && (
-              <div
-                class="pointer-events-none absolute z-30 border border-accent bg-accent/15"
-                style={{
-                  left: `${marquee.x}px`,
-                  top: `${marquee.y}px`,
-                  width: `${marquee.width}px`,
-                  height: `${marquee.height}px`,
-                }}
-              />
-            )}
-          </div>
-        )}
+          ))}
+        </div>
       </div>
 
       <FrameDurationEditor />
@@ -351,40 +331,120 @@ export function TimelinePanel() {
   );
 }
 
-function DropIndicator({
-  frames,
-  zoom,
-  trackIndex,
-  beforeGlobalIndex,
-}: {
-  frames: typeof timeline.value;
-  zoom: number;
-  trackIndex: number;
-  beforeGlobalIndex: number;
-}) {
-  const w = clipWidth(zoom);
-  const onTrack: { globalIndex: number }[] = [];
-  for (let i = 0; i < frames.length; i++) {
-    if ((frames[i].trackIndex ?? 0) === trackIndex) {
-      onTrack.push({ globalIndex: i });
+/**
+ * Snap the primary clip's start or end to nearby edges (other clips, 0, playhead)
+ * within `SNAP_PX`. Candidates come from the viewport-sized neighbourhood only.
+ */
+function snapDelta(primary: ClipModel, deltaCs: number, moving: Set<string>, pps: number): number {
+  const threshold = SNAP_PX / pxPerCs(pps);
+  const start = primary.startCs + deltaCs;
+  const end = primary.endCs + deltaCs;
+  const candidates = [0, Math.round(currentTimeMs.peek() / MS_PER_CS)];
+  const range = 4 * threshold;
+  for (const track of timelineModel.peek().tracks) {
+    for (const lo of [start, end]) {
+      for (const cm of clipsInRange(track, lo - range, lo + range)) {
+        if (!moving.has(cm.clip.id)) candidates.push(cm.startCs, cm.endCs);
+      }
     }
   }
+  let best = deltaCs;
+  let bestDist = threshold;
+  for (const c of candidates) {
+    for (const edge of [start, end]) {
+      const dist = Math.abs(c - edge);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = deltaCs + (c - edge);
+      }
+    }
+  }
+  return best;
+}
 
-  let x: number;
-  const idxInTrack = onTrack.findIndex(({ globalIndex }) => globalIndex >= beforeGlobalIndex);
-  if (idxInTrack < 0) {
-    x = TRACK_LABEL_WIDTH + onTrack.length * (w + CLIP_GAP);
-  } else {
-    x = TRACK_LABEL_WIDTH + idxInTrack * (w + CLIP_GAP) - CLIP_GAP / 2;
+/** Frames whose time span intersects the marquee, on the tracks it covers. */
+function framesInRect(m: { x: number; y: number; width: number; height: number }): string[] {
+  const pps = pxPerSec.peek();
+  const trackCount = effectiveTrackCount.peek();
+  const from = xToTime(m.x, pps);
+  const to = xToTime(m.x + m.width, pps);
+  const ids: string[] = [];
+  for (let t = 0; t < trackCount; t++) {
+    const top = trackTop(t, trackCount) + CLIP_PADDING_Y;
+    if (m.y > top + TRACK_HEIGHT - 2 * CLIP_PADDING_Y || m.y + m.height < top) continue;
+    for (const cm of clipsInRange(timelineModel.peek().tracks[t], from, to)) {
+      const [first, last] = frameRangeInClip(cm, from, to);
+      for (let i = first; i < last; i++) ids.push(cm.clip.frames[i].id);
+    }
+  }
+  return ids;
+}
+
+/** Ghosts of dragged clips (red when the drop would overlap) or the frame drop marker. */
+function DragFeedback() {
+  const d = dragState.value;
+  const model = timelineModel.value;
+  const pps = pxPerSec.value;
+  const tracks = effectiveTrackCount.value;
+  const ppc = pxPerCs(pps);
+  if (!d) return null;
+
+  if (d.kind === "clips") {
+    return (
+      <>
+        {[...d.clipIds].map((id) => {
+          const cm = model.clipById.get(id);
+          if (!cm) return null;
+          const track = cm.clip.trackIndex + d.deltaTrack;
+          if (track < 0 || track >= tracks) return null;
+          return (
+            <div
+              key={id}
+              class={`pointer-events-none absolute z-20 rounded border-2 ${
+                d.valid ? "border-accent bg-accent/20" : "border-red-500 bg-red-500/20"
+              }`}
+              style={{
+                left: `${timeToX(cm.startCs + d.deltaCs, pps)}px`,
+                top: `${trackTop(track, tracks) + CLIP_PADDING_Y}px`,
+                width: `${(cm.endCs - cm.startCs) * ppc}px`,
+                height: `${TRACK_HEIGHT - 2 * CLIP_PADDING_Y}px`,
+              }}
+            />
+          );
+        })}
+      </>
+    );
   }
 
+  const target = d.target;
+  if (!target) return null;
+  if (target.kind === "insert") {
+    const cm = model.clipById.get(target.clipId);
+    if (!cm) return null;
+    return (
+      <div
+        class="pointer-events-none absolute z-20 w-0.5 bg-accent shadow-[0_0_8px_#3b82f6]"
+        style={{
+          left: `${timeToX(cm.frameStarts[target.index], pps) - 1}px`,
+          top: `${trackTop(cm.clip.trackIndex, tracks) + 2}px`,
+          height: `${TRACK_HEIGHT - 4}px`,
+        }}
+      />
+    );
+  }
+  let lengthCs = 0;
+  for (const id of d.frameIds) {
+    const loc = model.frameById.get(id);
+    if (loc) lengthCs += loc.clip.clip.frames[loc.index].durationCs;
+  }
   return (
     <div
-      class="pointer-events-none absolute z-20 w-0.5 bg-accent shadow-[0_0_8px_#3b82f6]"
+      class="pointer-events-none absolute z-20 rounded border-2 border-dashed border-accent bg-accent/15"
       style={{
-        left: `${x}px`,
-        top: `${RULER_HEIGHT + trackIndex * TRACK_HEIGHT + 4}px`,
-        height: `${TRACK_HEIGHT - 8}px`,
+        left: `${timeToX(target.startCs, pps)}px`,
+        top: `${trackTop(target.trackIndex, tracks) + CLIP_PADDING_Y}px`,
+        width: `${Math.max(4, lengthCs * ppc)}px`,
+        height: `${TRACK_HEIGHT - 2 * CLIP_PADDING_Y}px`,
       }}
     />
   );
